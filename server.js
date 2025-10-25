@@ -72,10 +72,10 @@ app.use(helmet({
 
 // CORS configuration
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     const allowedOrigins = [
       'http://localhost:3000',
       'http://127.0.0.1:3000',
@@ -88,12 +88,12 @@ app.use(cors({
       // Allow any domain in development
       ...(process.env.NODE_ENV !== 'production' ? [/.*/] : [])
     ];
-    
+
     const isAllowed = allowedOrigins.some(pattern => {
       if (typeof pattern === 'string') return pattern === origin;
       return pattern.test(origin);
     });
-    
+
     if (isAllowed) {
       callback(null, true);
     } else {
@@ -145,21 +145,36 @@ app.use((req, res, next) => {
 });
 
 // ================================================
-// API ROOT ENDPOINT
+// SERVE FRONTEND (for localhost development)
 // ================================================
-// Backend is API-only - Frontend is hosted separately on Hostinger
+const FRONTEND_DIR = path.join(__dirname, '../frontend');
+
+// Serve static files
+app.use(express.static(FRONTEND_DIR));
+
+// Clean URL routes (same as .htaccess for Hostinger)
 app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Agrivalah API Server',
-    version: '1.0.0',
-    status: 'running',
-    endpoints: {
-      health: '/api/health-check',
-      docs: '/api/docs',
-      frontend: process.env.FRONTEND_URL || 'https://agrivalah.in'
-    }
-  });
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+});
+
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'admin-login.html'));
+});
+
+app.get('/admin/dashboard', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'admin-dashboard.html'));
+});
+
+app.get('/influencer', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'influencer-login.html'));
+});
+
+app.get('/influencer/dashboard', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'influencer-dashboard.html'));
+});
+
+app.get('/influencer/register', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'influencer-register.html'));
 });
 
 // ================================================
@@ -238,19 +253,19 @@ const influencerSchema = new mongoose.Schema({
   contact_number: { type: String, required: true, unique: true, index: true },
   password_hash: { type: String, required: true },
   email: { type: String, trim: true, lowercase: true },
-  type: { 
-    type: String, 
-    enum: ['Farmer', 'NGO', 'Youtuber', 'Local Promoter', 'Agricultural Expert', 'Community Leader'], 
-    required: true 
+  type: {
+    type: String,
+    enum: ['Farmer', 'NGO', 'Youtuber', 'Local Promoter', 'Agricultural Expert', 'Community Leader'],
+    required: true
   },
   social_link: { type: String, trim: true },
   region: { type: String, required: true, trim: true },
   upi_id: { type: String, required: true, trim: true },
   bank_details: { type: String, trim: true },
   coupon_code: { type: String, unique: true, sparse: true, index: true },
-  approval_status: { 
-    type: String, 
-    enum: ['pending', 'approved', 'rejected', 'disabled'], 
+  approval_status: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected', 'disabled'],
     default: 'pending',
     index: true
   },
@@ -897,7 +912,7 @@ app.post('/api/auth/influencer-login', async (req, res) => {
     console.log('[Influencer Login] Comparing password...');
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     console.log('[Influencer Login] Password match:', passwordMatch);
-    
+
     if (!passwordMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -962,13 +977,13 @@ app.get('/api/auth/me', requireAuth(), async (req, res) => {
 app.post('/api/influencers/check-phone', async (req, res) => {
   try {
     const { phoneNumber } = req.body;
-    
+
     if (!phoneNumber) {
       return res.status(400).json({ success: false, message: 'Phone number is required' });
     }
 
     const existing = await Influencer.findOne({ contact_number: phoneNumber });
-    
+
     return res.json({
       success: true,
       exists: !!existing,
@@ -984,13 +999,13 @@ app.post('/api/influencers/check-phone', async (req, res) => {
 app.post('/api/influencers/check-upi', async (req, res) => {
   try {
     const { upiId } = req.body;
-    
+
     if (!upiId) {
       return res.status(400).json({ success: false, message: 'UPI ID is required' });
     }
 
     const existing = await Influencer.findOne({ upi_id: upiId });
-    
+
     return res.json({
       success: true,
       exists: !!existing,
@@ -1138,8 +1153,8 @@ app.get('/api/validate-coupon', async (req, res) => {
     }
 
     // Try case-insensitive search for coupon code
-    const coupon = await Coupon.findOne({ 
-      code: { $regex: new RegExp(`^${rawCode}$`, 'i') } 
+    const coupon = await Coupon.findOne({
+      code: { $regex: new RegExp(`^${rawCode}$`, 'i') }
     }).populate('influencer');
 
     if (!coupon) {
@@ -2633,7 +2648,7 @@ app.post('/api/admin/registrations/manual', requireAdmin(), async (req, res) => 
     const reference_id = `CNF${year}${month}${day}${random}`;
 
     // Generate payment ID like Razorpay (avcf_ prefix + timestamp + random)
-    const paymentId = regData.payment_status === 'completed' 
+    const paymentId = regData.payment_status === 'completed'
       ? `avcf_${Date.now()}${Math.random().toString(36).substring(2, 9)}`
       : null;
     const orderId = regData.payment_status === 'completed'
@@ -2649,19 +2664,19 @@ app.post('/api/admin/registrations/manual', requireAdmin(), async (req, res) => 
     if (regData.coupon_code && regData.coupon_code.trim()) {
       const couponCode = regData.coupon_code.trim().toUpperCase();
       const coupon = await Coupon.findOne({ code: couponCode }).populate('influencer');
-      
+
       if (coupon && coupon.influencer && coupon.influencer.approval_status === 'approved') {
         influencer = coupon.influencer._id;
         commissionAmount = coupon.commission_amount || 50;
         couponDiscount = coupon.discount_value || 50;
         paymentAmount = Math.max(0, paymentAmount - couponDiscount);
-        
+
         // Update coupon usage
         await Coupon.findByIdAndUpdate(coupon._id, {
           $inc: { usage_count: 1, total_revenue: paymentAmount },
           $set: { last_used_at: now }
         });
-        
+
         // Update influencer tracking
         await Influencer.findByIdAndUpdate(influencer, {
           $inc: {
@@ -2764,7 +2779,7 @@ app.post('/api/admin/registrations/manual', requireAdmin(), async (req, res) => 
       // Update system stats for today
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       await SystemStats.findOneAndUpdate(
         { date: today },
         {
@@ -2812,7 +2827,7 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
     for (const regData of registrations) {
       try {
         const now = new Date();
-        
+
         // Generate reference ID like website (CNF + YYYYMMDD + 3-digit random)
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -2833,19 +2848,19 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
         if (regData.coupon_code && regData.coupon_code.trim()) {
           const couponCode = regData.coupon_code.trim().toUpperCase();
           const coupon = await Coupon.findOne({ code: couponCode }).populate('influencer');
-          
+
           if (coupon && coupon.influencer && coupon.influencer.approval_status === 'approved') {
             influencer = coupon.influencer._id;
             commissionAmount = coupon.commission_amount || 50;
             couponDiscount = coupon.discount_value || 50;
             paymentAmount = Math.max(0, paymentAmount - couponDiscount);
-            
+
             // Update coupon usage
             await Coupon.findByIdAndUpdate(coupon._id, {
               $inc: { usage_count: 1, total_revenue: paymentAmount },
               $set: { last_used_at: now }
             });
-            
+
             // Update influencer tracking
             await Influencer.findByIdAndUpdate(influencer, {
               $inc: {
@@ -2957,7 +2972,7 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
         // Update system stats for today
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         await SystemStats.findOneAndUpdate(
           { date: today },
           {
@@ -3123,7 +3138,7 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
     if (tempPassword) {
       try {
         const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Influencer application has been APPROVED.\n\nYour Login Credentials:\nMobile: ${influencer.contact_number}\nPassword: ${tempPassword}\nCoupon Code: ${influencer.coupon_code}\n\nLogin at: ${process.env.FRONTEND_URL || 'https://agrivalah.com'}/influencer/login\n\nEarn ₹50 per referral!`;
-        
+
         await sendSms(influencer.contact_number, smsMessage);
         console.log(`SMS sent to ${influencer.contact_number} with login credentials`);
       } catch (smsError) {
@@ -3132,9 +3147,9 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
       }
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Influencer approved successfully. SMS sent with login credentials.', 
+    res.json({
+      success: true,
+      message: 'Influencer approved successfully. SMS sent with login credentials.',
       influencer,
       credentials: {
         mobile: influencer.contact_number,
@@ -3169,7 +3184,7 @@ app.post('/api/admin/influencers/:id/reject', requireAdmin(), async (req, res) =
     // Send SMS notification about rejection
     try {
       const smsMessage = `Dear ${influencer.name}, your Agrivalah Influencer application has been reviewed. Unfortunately, we cannot approve your application at this time.${reason ? `\n\nReason: ${reason}` : ''}\n\nYou can reapply or contact support for more information.`;
-      
+
       await sendSms(influencer.contact_number, smsMessage);
       console.log(`Rejection SMS sent to ${influencer.contact_number}`);
     } catch (smsError) {
@@ -3260,15 +3275,15 @@ app.post('/api/admin/influencers/:id/credentials', requireAdmin(), async (req, r
       });
 
       console.log('[Admin] Credentials assigned successfully');
-      res.json({ 
-        success: true, 
-        message: 'Login credentials assigned successfully. Influencer can now login with provided email and password.' 
+      res.json({
+        success: true,
+        message: 'Login credentials assigned successfully. Influencer can now login with provided email and password.'
       });
     } catch (userError) {
       console.error('[Admin] Failed to create user account:', userError);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Failed to create user account: ' + userError.message 
+      res.status(500).json({
+        success: false,
+        message: 'Failed to create user account: ' + userError.message
       });
     }
   } catch (error) {
@@ -3493,13 +3508,13 @@ async function sendSms(phoneNumber, message) {
 
     console.log(`\n[SMS] 📱 Sending SMS to ${destination}...`);
     const result = await twilioClient.messages.create(smsPayload);
-    
+
     console.log(`[SMS] ✅ SMS SENT SUCCESSFULLY!`);
     console.log(`[SMS] SID: ${result.sid}`);
     console.log(`[SMS] Status: ${result.status}`);
     console.log(`[SMS] To: ${result.to}`);
     console.log(`[SMS] From: ${result.from}\n`);
-    
+
     return { simulated: false, sid: result.sid, status: result.status };
   } catch (error) {
     console.error(`\n[SMS] ❌ FAILED to send SMS to ${destination}`);

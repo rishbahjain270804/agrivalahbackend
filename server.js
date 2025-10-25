@@ -37,7 +37,7 @@ const JWT_COOKIE_NAME = process.env.JWT_COOKIE_NAME || 'nf_token';
 const PASSWORD_SALT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || '12', 10);
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || null;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || null;
-const ALLOWED_INFLUENCER_ROLES = ['Farmer', 'NGO', 'Youtuber', 'Local Promoter'];
+const ALLOWED_INFLUENCER_ROLES = ['Farmer', 'NGO', 'Youtuber', 'Local Promoter', 'Agricultural Expert', 'Community Leader'];
 const USER_ROLES = Object.freeze({ ADMIN: 'admin', INFLUENCER: 'influencer' });
 const USER_STATUS = Object.freeze({ ACTIVE: 'active', PENDING: 'pending', DISABLED: 'disabled' });
 const JWT_COOKIE_MAX_AGE = parseInt(process.env.JWT_COOKIE_MAX_AGE_DAYS || '7', 10) * 24 * 60 * 60 * 1000;
@@ -64,18 +64,10 @@ const razorpayClient = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_
 // ================================================
 
 // Security middleware
+// Disable CSP for API server - CSP should be handled by frontend
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://checkout.razorpay.com", "https://cdn.jsdelivr.net"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://api.razorpay.com"],
-      frameSrc: ["'self'", "https://api.razorpay.com"]
-    },
-  },
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
 }));
 
 // CORS configuration
@@ -177,6 +169,10 @@ app.get('/influencer/login', (req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, 'influencer-login.html'));
 });
 
+app.get('/influencer/register', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'influencer-register.html'));
+});
+
 // ================================================
 // DATABASE CONNECTION
 // ================================================
@@ -249,26 +245,40 @@ const couponSchema = new mongoose.Schema({
 
 // Influencer Schema
 const influencerSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  contact_number: { type: String, required: true },
-  password_hash: { type: String },
-  email: { type: String },
-  type: { type: String, enum: ['Farmer', 'NGO', 'Youtuber', 'Local Promoter'], required: true },
-  social_link: { type: String },
-  region: { type: String },
-  upi_id: { type: String },
-  bank_details: { type: String },
-  coupon_code: { type: String, unique: true },
-  approval_status: { type: String, enum: ['pending', 'approved', 'rejected', 'disabled'], default: 'pending' },
+  name: { type: String, required: true, trim: true },
+  contact_number: { type: String, required: true, unique: true, index: true },
+  password_hash: { type: String, required: true },
+  email: { type: String, trim: true, lowercase: true },
+  type: { 
+    type: String, 
+    enum: ['Farmer', 'NGO', 'Youtuber', 'Local Promoter', 'Agricultural Expert', 'Community Leader'], 
+    required: true 
+  },
+  social_link: { type: String, trim: true },
+  region: { type: String, required: true, trim: true },
+  upi_id: { type: String, required: true, trim: true },
+  bank_details: { type: String, trim: true },
+  coupon_code: { type: String, unique: true, sparse: true, index: true },
+  approval_status: { 
+    type: String, 
+    enum: ['pending', 'approved', 'rejected', 'disabled'], 
+    default: 'pending',
+    index: true
+  },
   login_enabled: { type: Boolean, default: false },
   notes: { type: String, default: null },
-  total_earnings: { type: Number, default: 0 },
+  total_earnings: { type: Number, default: 0, min: 0 },
   payout_status: { type: String, enum: ['Paid', 'Pending'], default: 'Pending' },
-  referral_limit: { type: Number, default: null },
-  referral_uses: { type: Number, default: 0 },
-  commission_amount: { type: Number, default: 0 },
+  referral_limit: { type: Number, default: null, min: 0 },
+  referral_uses: { type: Number, default: 0, min: 0 },
+  commission_amount: { type: Number, default: 50, min: 0 },
   last_login: { type: Date, default: null },
-  created_at: { type: Date, default: Date.now }
+  phone_verified: { type: Boolean, default: false },
+  otp_verified_at: { type: Date, default: null },
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now }
+}, {
+  timestamps: true
 });
 
 // Payment Schema
@@ -313,7 +323,7 @@ const registrationSchema = new mongoose.Schema({
   area_natural_farming: { type: Number, required: true, min: 0.1, max: 10000 },
   // Crop Information
   present_crop: { type: String, default: null, trim: true },
-  sewing_date: { type: Date, required: true },
+  sowing_date: { type: Date, required: true },
   harvesting_date: { type: Date, default: null },
   crop_types: { type: String, required: true, trim: true },
   // Farming Practice
@@ -880,29 +890,27 @@ app.post('/api/auth/influencer-login', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Your account is pending approval.' });
     }
 
-    // Verify password
-    if (!influencer.password_hash) {
+    // Find user account (password is stored here)
+    let user = await User.findOne({ linked_influencer: influencer._id });
+    if (!user) {
+      console.log('[Influencer Login] User account not found for influencer:', influencer._id);
+      return res.status(401).json({ success: false, message: 'User account not found. Please contact admin.' });
+    }
+
+    console.log('[Influencer Login] Found user:', user.email);
+    console.log('[Influencer Login] Password hash exists:', !!user.password_hash);
+
+    // Verify password from user account
+    if (!user.password_hash) {
       return res.status(401).json({ success: false, message: 'Password not set. Please contact admin.' });
     }
 
-    const passwordMatch = await bcrypt.compare(password, influencer.password_hash);
+    console.log('[Influencer Login] Comparing password...');
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+    console.log('[Influencer Login] Password match:', passwordMatch);
+    
     if (!passwordMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
-
-    // Find or create user account
-    let user = await User.findOne({ linked_influencer: influencer._id });
-    if (!user) {
-      // Create user account for influencer
-      user = new User({
-        email: influencer.email || `${contactNumber}@influencer.local`,
-        password_hash: influencer.password_hash,
-        role: USER_ROLES.INFLUENCER,
-        status: USER_STATUS.ACTIVE,
-        linked_influencer: influencer._id,
-        force_password_reset: false
-      });
-      await user.save();
     }
 
     const token = signJwt(user);
@@ -959,6 +967,50 @@ app.get('/api/auth/me', requireAuth(), async (req, res) => {
         : null
     }
   });
+});
+
+// Check if phone number already exists
+app.post('/api/influencers/check-phone', async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ success: false, message: 'Phone number is required' });
+    }
+
+    const existing = await Influencer.findOne({ contact_number: phoneNumber });
+    
+    return res.json({
+      success: true,
+      exists: !!existing,
+      message: existing ? 'Phone number already registered' : 'Phone number available'
+    });
+  } catch (error) {
+    console.error('[Check Phone] Error:', error);
+    return res.status(500).json({ success: false, message: 'Error checking phone number' });
+  }
+});
+
+// Check if UPI ID already exists
+app.post('/api/influencers/check-upi', async (req, res) => {
+  try {
+    const { upiId } = req.body;
+    
+    if (!upiId) {
+      return res.status(400).json({ success: false, message: 'UPI ID is required' });
+    }
+
+    const existing = await Influencer.findOne({ upi_id: upiId });
+    
+    return res.json({
+      success: true,
+      exists: !!existing,
+      message: existing ? 'UPI ID already registered' : 'UPI ID available'
+    });
+  } catch (error) {
+    console.error('[Check UPI] Error:', error);
+    return res.status(500).json({ success: false, message: 'Error checking UPI ID' });
+  }
 });
 
 app.post('/api/influencers/register', async (req, res) => {
@@ -1096,10 +1148,16 @@ app.get('/api/validate-coupon', async (req, res) => {
       });
     }
 
-    const coupon = await Coupon.findOne({ code: rawCode }).populate('influencer');
+    // Try case-insensitive search for coupon code
+    const coupon = await Coupon.findOne({ 
+      code: { $regex: new RegExp(`^${rawCode}$`, 'i') } 
+    }).populate('influencer');
+
+    if (!coupon) {
+      return res.json({ valid: false });
+    }
 
     if (
-      !coupon ||
       !coupon.influencer ||
       coupon.influencer.approval_status !== 'approved' ||
       !isCouponWithinValidity(coupon)
@@ -2173,7 +2231,7 @@ app.post('/api/registration/save', async (req, res) => {
       { key: 'totalLand', label: 'Total Land' },
       { key: 'landUnit', label: 'Land Unit' },
       { key: 'areaNaturalFarming', label: 'Area Under Natural Farming' },
-      { key: 'sewingDate', label: 'Sowing Date' },
+      { key: 'sowingDate', label: 'Sowing Date' },
       { key: 'cropTypes', label: 'Crop Types' },
       { key: 'farmingPractice', label: 'Farming Practice' },
       { key: 'farmingExperience', label: 'Farming Experience' },
@@ -2288,7 +2346,7 @@ app.post('/api/registration/save', async (req, res) => {
     registration.land_unit = normalizeLandUnit(data.landUnit);
     registration.area_natural_farming = toNumeric(data.areaNaturalFarming, 0);
     registration.present_crop = data.presentCrop ? String(data.presentCrop).trim() : null;
-    registration.sewing_date = data.sewingDate ? new Date(data.sewingDate) : new Date();
+    registration.sowing_date = data.sowingDate ? new Date(data.sowingDate) : new Date();
     registration.harvesting_date = data.harvestingDate ? new Date(data.harvestingDate) : null;
     registration.crop_types = String(data.cropTypes || '').trim();
     registration.farming_practice = normalizeFarmingPractice(data.farmingPractice);
@@ -2575,25 +2633,162 @@ app.post('/api/registration/complete', async (req, res) => {
 // Admin - Manual registration
 app.post('/api/admin/registrations/manual', requireAdmin(), async (req, res) => {
   try {
-    const registrationData = req.body;
+    const regData = req.body;
+    const now = new Date();
 
-    // Generate reference ID if not provided
-    if (!registrationData.reference_id) {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const day = String(now.getDate()).padStart(2, '0');
-      const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-      registrationData.reference_id = `CNF${year}${month}${day}${random}`;
+    // Generate reference ID like website (CNF + YYYYMMDD + 3-digit random)
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const reference_id = `CNF${year}${month}${day}${random}`;
+
+    // Generate payment ID like Razorpay (avcf_ prefix + timestamp + random)
+    const paymentId = regData.payment_status === 'completed' 
+      ? `avcf_${Date.now()}${Math.random().toString(36).substring(2, 9)}`
+      : null;
+    const orderId = regData.payment_status === 'completed'
+      ? `order_avcf_${Date.now()}${Math.random().toString(36).substring(2, 9)}`
+      : null;
+
+    // Handle coupon code if provided
+    let influencer = null;
+    let commissionAmount = 0;
+    let couponDiscount = 0;
+    let paymentAmount = Number(regData.payment_amount) || 300;
+
+    if (regData.coupon_code && regData.coupon_code.trim()) {
+      const couponCode = regData.coupon_code.trim().toUpperCase();
+      const coupon = await Coupon.findOne({ code: couponCode }).populate('influencer');
+      
+      if (coupon && coupon.influencer && coupon.influencer.approval_status === 'approved') {
+        influencer = coupon.influencer._id;
+        commissionAmount = coupon.commission_amount || 50;
+        couponDiscount = coupon.discount_value || 50;
+        paymentAmount = Math.max(0, paymentAmount - couponDiscount);
+        
+        // Update coupon usage
+        await Coupon.findByIdAndUpdate(coupon._id, {
+          $inc: { usage_count: 1, total_revenue: paymentAmount },
+          $set: { last_used_at: now }
+        });
+        
+        // Update influencer tracking
+        await Influencer.findByIdAndUpdate(influencer, {
+          $inc: {
+            total_earnings: commissionAmount,
+            referral_uses: 1
+          },
+          $set: {
+            payout_status: 'Pending'
+          }
+        });
+      }
     }
 
-    // Set defaults
-    registrationData.registration_date = registrationData.registration_date || new Date();
-    registrationData.status = registrationData.status || 'approved';
-    registrationData.otp_verified = true;
-    registrationData.otp_verified_at = new Date();
+    // Create registration with all fields like website
+    const registration = await Registration.create({
+      reference_id,
+      registration_date: regData.registration_date ? new Date(regData.registration_date) : now,
+      farmer_name: regData.farmer_name,
+      father_spouse_name: regData.father_spouse_name,
+      contact_number: regData.contact_number,
+      email_id: regData.email_id || null,
+      aadhaar_farmer_id: regData.aadhaar_farmer_id || null,
+      village_panchayat: regData.village_panchayat,
+      mandal_block: regData.mandal_block,
+      district: regData.district,
+      state: regData.state,
+      khasra_passbook: regData.khasra_passbook || null,
+      plot_no: regData.plot_no || null,
+      total_land: Number(regData.total_land) || 0,
+      land_unit: regData.land_unit || 'Acre',
+      area_natural_farming: Number(regData.area_natural_farming) || 0,
+      present_crop: regData.present_crop || null,
+      sowing_date: regData.sowing_date ? new Date(regData.sowing_date) : now,
+      harvesting_date: regData.harvesting_date ? new Date(regData.harvesting_date) : null,
+      crop_types: regData.crop_types || '',
+      farming_practice: regData.farming_practice || 'Natural',
+      farming_experience: Number(regData.farming_experience) || 0,
+      irrigation_source: regData.irrigation_source || 'Other',
+      livestock: regData.livestock || [],
+      willing_to_adopt: regData.willing_to_adopt || 'yes',
+      terms_agreement: regData.terms_agreement || false,
+      coupon_code: regData.coupon_code ? regData.coupon_code.toUpperCase() : null,
+      influencer: influencer,
+      commission_amount: commissionAmount,
+      commission_paid: false,
+      coupon_discount: couponDiscount,
+      payment_amount: paymentAmount,
+      payment_id: paymentId,
+      order_id: orderId,
+      payment_status: regData.payment_status || 'completed',
+      status: 'approved',
+      submission_source: 'admin_manual',
+      otp_verified: true,
+      otp_verified_at: now,
+      otp_token: null,
+      ip_address: req.ip || 'admin',
+      user_agent: 'Admin Manual Entry',
+      additional_details: {
+        trainingRequired: regData.training_required || null,
+        localGroupName: regData.local_group_name || null,
+        preferredCroppingSeason: regData.preferred_cropping_season || null,
+        remarks: regData.remarks || null,
+        naturalInputs: regData.willing_to_adopt || 'yes'
+      }
+    });
 
-    const registration = await Registration.create(registrationData);
+    // Create payment record if payment is completed
+    if (regData.payment_status === 'completed') {
+      await Payment.create({
+        farmer: registration._id,
+        amount: paymentAmount,
+        currency: 'INR',
+        payment_id: paymentId,
+        order_id: orderId,
+        razorpay_signature: null,
+        payment_status: 'Success',
+        coupon_code: regData.coupon_code ? regData.coupon_code.toUpperCase() : null,
+        influencer: influencer,
+        commission_amount: commissionAmount,
+        commission_paid: false
+      });
+
+      // Create payment log
+      await PaymentLog.create({
+        payment_id: paymentId,
+        order_id: orderId,
+        razorpay_signature: null,
+        amount: paymentAmount,
+        currency: 'INR',
+        status: 'paid',
+        method: 'admin_entry',
+        email: regData.email_id || null,
+        contact: regData.contact_number,
+        ip_address: req.ip || 'admin',
+        user_agent: 'Admin Manual Entry',
+        registration_reference: reference_id,
+        notes: { source: 'manual_entry', admin: true }
+      });
+
+      // Update system stats for today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      await SystemStats.findOneAndUpdate(
+        { date: today },
+        {
+          $inc: {
+            total_registrations: 1,
+            successful_payments: 1,
+            revenue: paymentAmount
+          },
+          $addToSet: { districts_covered: regData.district }
+        },
+        { upsert: true, new: true }
+      );
+    }
 
     res.json({
       success: true,
@@ -2627,29 +2822,171 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
 
     for (const regData of registrations) {
       try {
-        // Generate reference ID
         const now = new Date();
+        
+        // Generate reference ID like website (CNF + YYYYMMDD + 3-digit random)
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
         const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-        regData.reference_id = `CNF${year}${month}${day}${random}`;
+        const reference_id = `CNF${year}${month}${day}${random}`;
 
-        // Set defaults
-        regData.registration_date = regData.registration_date || new Date();
-        regData.status = regData.status || 'approved';
-        regData.otp_verified = true;
-        regData.otp_verified_at = new Date();
-        regData.sewing_date = regData.sewing_date || new Date();
-        regData.farming_experience = regData.farming_experience || 0;
-        regData.irrigation_source = regData.irrigation_source || 'Other';
+        // Generate payment ID like Razorpay (avcf_ prefix + timestamp + random)
+        const paymentId = `avcf_${Date.now()}${Math.random().toString(36).substring(2, 9)}`;
+        const orderId = `order_avcf_${Date.now()}${Math.random().toString(36).substring(2, 9)}`;
 
-        await Registration.create(regData);
+        // Handle coupon code if provided
+        let influencer = null;
+        let commissionAmount = 0;
+        let couponDiscount = 0;
+        let paymentAmount = Number(regData.payment_amount) || 300;
+
+        if (regData.coupon_code && regData.coupon_code.trim()) {
+          const couponCode = regData.coupon_code.trim().toUpperCase();
+          const coupon = await Coupon.findOne({ code: couponCode }).populate('influencer');
+          
+          if (coupon && coupon.influencer && coupon.influencer.approval_status === 'approved') {
+            influencer = coupon.influencer._id;
+            commissionAmount = coupon.commission_amount || 50;
+            couponDiscount = coupon.discount_value || 50;
+            paymentAmount = Math.max(0, paymentAmount - couponDiscount);
+            
+            // Update coupon usage
+            await Coupon.findByIdAndUpdate(coupon._id, {
+              $inc: { usage_count: 1, total_revenue: paymentAmount },
+              $set: { last_used_at: now }
+            });
+            
+            // Update influencer tracking
+            await Influencer.findByIdAndUpdate(influencer, {
+              $inc: {
+                total_earnings: commissionAmount,
+                referral_uses: 1
+              },
+              $set: {
+                payout_status: 'Pending'
+              }
+            });
+          }
+        }
+
+        // Parse livestock if it's a string
+        let livestock = [];
+        if (regData.livestock) {
+          if (typeof regData.livestock === 'string') {
+            livestock = regData.livestock.split(';').map(l => l.trim()).filter(Boolean);
+          } else if (Array.isArray(regData.livestock)) {
+            livestock = regData.livestock;
+          }
+        }
+
+        // Create registration with all fields like website
+        const registration = await Registration.create({
+          reference_id,
+          registration_date: regData.registration_date ? new Date(regData.registration_date) : now,
+          farmer_name: regData.farmer_name,
+          father_spouse_name: regData.father_spouse_name,
+          contact_number: regData.contact_number,
+          email_id: regData.email_id || null,
+          aadhaar_farmer_id: regData.aadhaar_farmer_id || null,
+          village_panchayat: regData.village_panchayat,
+          mandal_block: regData.mandal_block,
+          district: regData.district,
+          state: regData.state,
+          khasra_passbook: regData.khasra_passbook || null,
+          plot_no: regData.plot_no || null,
+          total_land: Number(regData.total_land) || 0,
+          land_unit: regData.land_unit || 'Acre',
+          area_natural_farming: Number(regData.area_natural_farming) || 0,
+          present_crop: regData.present_crop || null,
+          sowing_date: regData.sowing_date ? new Date(regData.sowing_date) : now,
+          harvesting_date: regData.harvesting_date ? new Date(regData.harvesting_date) : null,
+          crop_types: regData.crop_types || '',
+          farming_practice: regData.farming_practice || 'Natural',
+          farming_experience: Number(regData.farming_experience) || 0,
+          irrigation_source: regData.irrigation_source || 'Rainwater',
+          livestock: livestock,
+          willing_to_adopt: regData.willing_to_adopt || 'yes',
+          terms_agreement: regData.terms_agreement === 'yes' || regData.terms_agreement === true,
+          coupon_code: regData.coupon_code ? regData.coupon_code.toUpperCase() : null,
+          influencer: influencer,
+          commission_amount: commissionAmount,
+          commission_paid: false,
+          coupon_discount: couponDiscount,
+          payment_amount: paymentAmount,
+          payment_id: paymentId,
+          order_id: orderId,
+          payment_status: regData.payment_status || 'completed',
+          status: 'approved',
+          submission_source: 'admin_bulk',
+          otp_verified: true,
+          otp_verified_at: now,
+          otp_token: null,
+          ip_address: req.ip || 'admin',
+          user_agent: 'Admin Bulk Upload',
+          additional_details: {
+            trainingRequired: regData.training_required || null,
+            localGroupName: regData.local_group_name || null,
+            preferredCroppingSeason: regData.preferred_cropping_season || null,
+            remarks: regData.remarks || null,
+            naturalInputs: regData.willing_to_adopt || 'yes'
+          }
+        });
+
+        // Create payment record
+        await Payment.create({
+          farmer: registration._id,
+          amount: paymentAmount,
+          currency: 'INR',
+          payment_id: paymentId,
+          order_id: orderId,
+          razorpay_signature: null,
+          payment_status: regData.payment_status === 'completed' ? 'Success' : 'Pending',
+          coupon_code: regData.coupon_code ? regData.coupon_code.toUpperCase() : null,
+          influencer: influencer,
+          commission_amount: commissionAmount,
+          commission_paid: false
+        });
+
+        // Create payment log
+        await PaymentLog.create({
+          payment_id: paymentId,
+          order_id: orderId,
+          razorpay_signature: null,
+          amount: paymentAmount,
+          currency: 'INR',
+          status: regData.payment_status === 'completed' ? 'paid' : 'created',
+          method: 'admin_entry',
+          email: regData.email_id || null,
+          contact: regData.contact_number,
+          ip_address: req.ip || 'admin',
+          user_agent: 'Admin Bulk Upload',
+          registration_reference: reference_id,
+          notes: { source: 'bulk_upload', admin: true }
+        });
+
+        // Update system stats for today
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        await SystemStats.findOneAndUpdate(
+          { date: today },
+          {
+            $inc: {
+              total_registrations: 1,
+              successful_payments: regData.payment_status === 'completed' ? 1 : 0,
+              revenue: regData.payment_status === 'completed' ? paymentAmount : 0
+            },
+            $addToSet: { districts_covered: regData.district }
+          },
+          { upsert: true, new: true }
+        );
+
         successCount++;
       } catch (error) {
         failedCount++;
         errors.push({
-          farmer_name: regData.farmer_name,
+          farmer_name: regData.farmer_name || 'Unknown',
           error: error.message
         });
       }
@@ -2674,7 +3011,7 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
 // Admin - Get all registrations with filters
 app.get('/api/admin/registrations', requireAdmin(), async (req, res) => {
   try {
-    const { search, status, paymentStatus, page = 1, limit = 100 } = req.query;
+    const { search, status, paymentStatus, page = 1, limit = 20 } = req.query;
     const query = {};
 
     if (search) {
@@ -2689,13 +3026,19 @@ app.get('/api/admin/registrations', requireAdmin(), async (req, res) => {
     if (status) query.status = status;
     if (paymentStatus) query.payment_status = paymentStatus;
 
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const total = await Registration.countDocuments(query);
     const registrations = await Registration.find(query)
       .populate('influencer')
       .sort({ registration_date: -1 })
-      .limit(parseInt(limit))
+      .skip(skip)
+      .limit(limitNum)
       .lean();
 
-    res.json({ success: true, registrations });
+    res.json({ success: true, registrations, total, page: pageNum, limit: limitNum });
   } catch (error) {
     console.error('Admin registrations error:', error);
     res.status(500).json({ success: false, message: 'Failed to load registrations' });
@@ -2705,7 +3048,7 @@ app.get('/api/admin/registrations', requireAdmin(), async (req, res) => {
 // Admin - Get all payments with filters
 app.get('/api/admin/payments', requireAdmin(), async (req, res) => {
   try {
-    const { search, status, page = 1, limit = 100 } = req.query;
+    const { search, status, page = 1, limit = 20 } = req.query;
     const query = {};
 
     if (search) {
@@ -2717,14 +3060,20 @@ app.get('/api/admin/payments', requireAdmin(), async (req, res) => {
     }
     if (status) query.payment_status = status;
 
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const total = await Payment.countDocuments(query);
     const payments = await Payment.find(query)
       .populate('influencer')
       .populate('farmer')
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .skip(skip)
+      .limit(limitNum)
       .lean();
 
-    res.json({ success: true, payments });
+    res.json({ success: true, payments, total, page: pageNum, limit: limitNum });
   } catch (error) {
     console.error('Admin payments error:', error);
     res.status(500).json({ success: false, message: 'Failed to load payments' });
@@ -2765,8 +3114,9 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
     }
 
     // Create user account for influencer
+    let tempPassword = null;
     try {
-      const tempPassword = generateTemporaryPassword();
+      tempPassword = generateTemporaryPassword();
       await upsertInfluencerUser({
         influencer,
         email: influencer.email || `${influencer.contact_number}@cyano.in`,
@@ -2780,7 +3130,29 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
       console.error('Failed to create user account:', userError);
     }
 
-    res.json({ success: true, message: 'Influencer approved successfully', influencer });
+    // Send SMS notification with login credentials
+    if (tempPassword) {
+      try {
+        const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Influencer application has been APPROVED.\n\nYour Login Credentials:\nMobile: ${influencer.contact_number}\nPassword: ${tempPassword}\nCoupon Code: ${influencer.coupon_code}\n\nLogin at: ${process.env.FRONTEND_URL || 'https://agrivalah.com'}/influencer/login\n\nEarn ₹50 per referral!`;
+        
+        await sendSms(influencer.contact_number, smsMessage);
+        console.log(`SMS sent to ${influencer.contact_number} with login credentials`);
+      } catch (smsError) {
+        console.error('Failed to send SMS notification:', smsError);
+        // Don't fail the approval if SMS fails
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Influencer approved successfully. SMS sent with login credentials.', 
+      influencer,
+      credentials: {
+        mobile: influencer.contact_number,
+        password: tempPassword,
+        couponCode: influencer.coupon_code
+      }
+    });
   } catch (error) {
     console.error('Approve influencer error:', error);
     res.status(500).json({ success: false, message: 'Failed to approve influencer' });
@@ -2805,7 +3177,17 @@ app.post('/api/admin/influencers/:id/reject', requireAdmin(), async (req, res) =
     }
     await influencer.save();
 
-    res.json({ success: true, message: 'Influencer rejected', influencer });
+    // Send SMS notification about rejection
+    try {
+      const smsMessage = `Dear ${influencer.name}, your Agrivalah Influencer application has been reviewed. Unfortunately, we cannot approve your application at this time.${reason ? `\n\nReason: ${reason}` : ''}\n\nYou can reapply or contact support for more information.`;
+      
+      await sendSms(influencer.contact_number, smsMessage);
+      console.log(`Rejection SMS sent to ${influencer.contact_number}`);
+    } catch (smsError) {
+      console.error('Failed to send rejection SMS:', smsError);
+    }
+
+    res.json({ success: true, message: 'Influencer rejected and notified via SMS', influencer });
   } catch (error) {
     console.error('Reject influencer error:', error);
     res.status(500).json({ success: false, message: 'Failed to reject influencer' });
@@ -3083,38 +3465,71 @@ async function dispatchOtp(phoneNumber, otpCode) {
   return { ...message, simulated: false };
 }
 
-async function sendCompletionNotifications(phoneNumber, referenceId) {
-  if (!phoneNumber) {
-    return;
+// Generic SMS sending function
+// REAL SMS SENDING - ALWAYS ENABLED
+async function sendSms(phoneNumber, message) {
+  if (!phoneNumber || !message) {
+    throw new Error('Phone number and message are required');
   }
 
   const destination = formatPhoneNumberForTwilio(phoneNumber);
   if (!destination) {
-    return;
+    throw new Error('Invalid phone number format');
   }
 
+  // Check if Twilio is configured
   if (!twilioClient || (!twilioMessagingServiceSid && !twilioSmsFrom)) {
-    console.log(`[SMS - simulated] Registration complete for ${destination} (Reference: ${referenceId})`);
+    console.log(`\n${'='.repeat(70)}`);
+    console.log(`[SMS] ⚠️  TWILIO NOT CONFIGURED - Cannot send SMS`);
+    console.log(`[SMS] To: ${destination}`);
+    console.log(`[SMS] Message Preview:`);
+    console.log(`${'-'.repeat(70)}`);
+    console.log(message);
+    console.log(`${'='.repeat(70)}\n`);
+    return { simulated: true, reason: 'Twilio not configured' };
+  }
+
+  // SEND REAL SMS
+  try {
+    const smsPayload = {
+      to: destination,
+      body: message
+    };
+
+    if (twilioMessagingServiceSid) {
+      smsPayload.messagingServiceSid = twilioMessagingServiceSid;
+    } else if (twilioSmsFrom) {
+      smsPayload.from = twilioSmsFrom;
+    }
+
+    console.log(`\n[SMS] 📱 Sending SMS to ${destination}...`);
+    const result = await twilioClient.messages.create(smsPayload);
+    
+    console.log(`[SMS] ✅ SMS SENT SUCCESSFULLY!`);
+    console.log(`[SMS] SID: ${result.sid}`);
+    console.log(`[SMS] Status: ${result.status}`);
+    console.log(`[SMS] To: ${result.to}`);
+    console.log(`[SMS] From: ${result.from}\n`);
+    
+    return { simulated: false, sid: result.sid, status: result.status };
+  } catch (error) {
+    console.error(`\n[SMS] ❌ FAILED to send SMS to ${destination}`);
+    console.error(`[SMS] Error: ${error.message}`);
+    if (error.code) console.error(`[SMS] Error Code: ${error.code}`);
+    if (error.moreInfo) console.error(`[SMS] More Info: ${error.moreInfo}\n`);
+    throw error;
+  }
+}
+
+async function sendCompletionNotifications(phoneNumber, referenceId) {
+  if (!phoneNumber) {
     return;
   }
 
   const smsMessage = `Cyano Veda: Registration successful. Reference ID ${referenceId}. We will contact you shortly.`;
 
   try {
-    const smsPayload = {};
-    if (twilioMessagingServiceSid) {
-      smsPayload.messagingServiceSid = twilioMessagingServiceSid;
-    } else if (twilioSmsFrom) {
-      smsPayload.from = twilioSmsFrom;
-    } else {
-      throw new Error('Twilio messaging configuration is incomplete');
-    }
-
-    await twilioClient.messages.create({
-      ...smsPayload,
-      to: destination,
-      body: smsMessage
-    });
+    await sendSms(phoneNumber, smsMessage);
   } catch (error) {
     console.warn('SMS notification failed:', error.message);
   }
@@ -3449,7 +3864,7 @@ app.post('/api/submit-registration', async (req, res) => {
     const requiredFields = [
       'farmerName', 'fatherSpouseName', 'contactNumber',
       'villagePanchayat', 'mandalBlock', 'district', 'state',
-      'totalLand', 'areaNaturalFarming', 'sewingDate', 'cropTypes',
+      'totalLand', 'areaNaturalFarming', 'sowingDate', 'cropTypes',
       'farmingPractice', 'termsAgreement'
     ];
 
@@ -3563,7 +3978,7 @@ app.post('/api/submit-registration', async (req, res) => {
 
       // Crop Information
       present_crop: req.body.presentCrop || null,
-      sewing_date: new Date(req.body.sewingDate),
+      sowing_date: new Date(req.body.sowingDate),
       harvesting_date: req.body.harvestingDate ? new Date(req.body.harvestingDate) : null,
       crop_types: req.body.cropTypes.trim(),
 

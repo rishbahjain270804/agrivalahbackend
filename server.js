@@ -526,17 +526,18 @@ function signJwt(user) {
 function setAuthCookie(res, token) {
   res.cookie(JWT_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: JWT_COOKIE_MAX_AGE
+    secure: true, // Always true for production (HTTPS required)
+    sameSite: 'none', // Required for cross-domain cookies
+    maxAge: JWT_COOKIE_MAX_AGE,
+    domain: process.env.NODE_ENV === 'production' ? undefined : undefined // Let browser handle domain
   });
 }
 
 function clearAuthCookie(res) {
   res.clearCookie(JWT_COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax'
+    secure: true,
+    sameSite: 'none'
   });
 }
 

@@ -145,37 +145,60 @@ app.use((req, res, next) => {
 });
 
 // ================================================
-// SERVE FRONTEND (for localhost development)
+// SERVE FRONTEND (for localhost development ONLY)
 // ================================================
-const FRONTEND_DIR = path.join(__dirname, '../frontend');
-
-// Serve static files
-app.use(express.static(FRONTEND_DIR));
-
-// Clean URL routes (same as .htaccess for Hostinger)
-app.get('/', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
-});
-
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'admin-login.html'));
-});
-
-app.get('/admin/dashboard', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'admin-dashboard.html'));
-});
-
-app.get('/influencer', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'influencer-login.html'));
-});
-
-app.get('/influencer/dashboard', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'influencer-dashboard.html'));
-});
-
-app.get('/influencer/register', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'influencer-register.html'));
-});
+if (process.env.NODE_ENV !== 'production') {
+  // Only serve frontend files in development (localhost)
+  const FRONTEND_DIR = path.join(__dirname, '../frontend');
+  
+  // Serve static files
+  app.use(express.static(FRONTEND_DIR));
+  
+  // Clean URL routes (same as .htaccess for Hostinger)
+  app.get('/', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+  });
+  
+  app.get('/admin', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'admin-login.html'));
+  });
+  
+  app.get('/admin/dashboard', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'admin-dashboard.html'));
+  });
+  
+  app.get('/influencer', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'influencer-login.html'));
+  });
+  
+  app.get('/influencer/dashboard', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'influencer-dashboard.html'));
+  });
+  
+  app.get('/influencer/register', (req, res) => {
+    res.sendFile(path.join(FRONTEND_DIR, 'influencer-register.html'));
+  });
+  
+  console.log('🌐 Serving frontend files for development');
+} else {
+  // Production: API-only, return API info
+  app.get('/', (req, res) => {
+    res.json({
+      success: true,
+      message: 'Agrivalah API Server',
+      version: '1.0.0',
+      status: 'running',
+      environment: 'production',
+      frontend: process.env.FRONTEND_URL || 'https://agrivalah.in',
+      endpoints: {
+        health: '/api/health-check',
+        docs: '/api/docs'
+      }
+    });
+  });
+  
+  console.log('🚀 Running in production mode - API only');
+}
 
 // ================================================
 // DATABASE CONNECTION

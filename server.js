@@ -31,7 +31,12 @@ const OTP_LENGTH = parseInt(process.env.OTP_LENGTH || '4', 10);
 const OTP_CODE_REGEX = new RegExp(`^\\d{${OTP_LENGTH}}$`);
 const TEST_REFERRAL_CODE = (process.env.TEST_REFERRAL_CODE || '8520erty').toLowerCase();
 const TEST_REFERRAL_NAME = 'Cyano Ambassador';
-const JWT_SECRET = process.env.JWT_SECRET || 'change_me';
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be set in production environment!');
+  }
+  return 'change_me_dev_only';
+})();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || process.env.JWT_EXPIRY || '7d';
 const JWT_COOKIE_NAME = process.env.JWT_COOKIE_NAME || 'nf_token';
 const PASSWORD_SALT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || '12', 10);
@@ -898,12 +903,16 @@ app.post('/api/auth/influencer-login', async (req, res) => {
   try {
     const { contactNumber, password } = req.body || {};
 
+    console.log('[Influencer Login] Received contact:', contactNumber);
+
     if (!contactNumber || !password) {
       return res.status(400).json({ success: false, message: 'Mobile number and password are required' });
     }
 
     // Find influencer by contact number
     const influencer = await Influencer.findOne({ contact_number: contactNumber });
+    console.log('[Influencer Login] Found influencer:', influencer ? { id: influencer._id, name: influencer.name, contact: influencer.contact_number } : 'NOT FOUND');
+    
     if (!influencer) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -925,17 +934,21 @@ app.post('/api/auth/influencer-login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'User account not found. Please contact admin.' });
     }
 
-    console.log('[Influencer Login] Found user:', user.email);
-    console.log('[Influencer Login] Password hash exists:', !!user.password_hash);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[Influencer Login] Found user:', user.email);
+      console.log('[Influencer Login] Password hash exists:', !!user.password_hash);
+    }
 
     // Verify password from user account
     if (!user.password_hash) {
       return res.status(401).json({ success: false, message: 'Password not set. Please contact admin.' });
     }
 
-    console.log('[Influencer Login] Comparing password...');
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
-    console.log('[Influencer Login] Password match:', passwordMatch);
+    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[Influencer Login] Password match:', passwordMatch);
+    }
 
     if (!passwordMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });

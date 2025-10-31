@@ -50,6 +50,13 @@ const JWT_COOKIE_MAX_AGE = parseInt(process.env.JWT_COOKIE_MAX_AGE_DAYS || '7', 
 const twilioClient = (twilioAccountSid && twilioAuthToken)
   ? twilio(twilioAccountSid, twilioAuthToken)
   : null;
+
+// Debug Twilio configuration
+console.log('🔧 Twilio Configuration:');
+console.log('  - Client:', twilioClient ? '✅ Initialized' : '❌ Not initialized');
+console.log('  - Messaging Service SID:', twilioMessagingServiceSid ? '✅ Set' : '❌ Not set');
+console.log('  - SMS From:', twilioSmsFrom ? '✅ Set' : '❌ Not set');
+
 const otpServiceConfigured = Boolean(
   twilioClient &&
   (
@@ -57,6 +64,8 @@ const otpServiceConfigured = Boolean(
     (twilioSmsFrom && twilioSmsFrom !== 'xxxxxxxxxx')
   )
 );
+
+console.log('  - OTP Service:', otpServiceConfigured ? '✅ Configured' : '⚠️  Not configured (Test Mode)');
 const razorpayClient = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,

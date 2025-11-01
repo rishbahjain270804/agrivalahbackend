@@ -84,12 +84,7 @@ const razorpayClient = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_
 // Disable CSP for API server - CSP should be handled by frontend
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false,
-  permissionsPolicy: {
-    features: {
-      'otp-credentials': ['self', 'https://checkout.razorpay.com']
-    }
-  }
+  crossOriginEmbedderPolicy: false
 }));
 
 // CORS configuration
@@ -172,35 +167,35 @@ app.use((req, res, next) => {
 if (process.env.NODE_ENV !== 'production') {
   // Only serve frontend files in development (localhost)
   const FRONTEND_DIR = path.join(__dirname, '../frontend');
-  
+
   // Serve static files
   app.use(express.static(FRONTEND_DIR));
-  
+
   // Clean URL routes (same as .htaccess for Hostinger)
   app.get('/', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
   });
-  
+
   app.get('/admin', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'admin-login.html'));
   });
-  
+
   app.get('/admin/dashboard', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'admin-dashboard.html'));
   });
-  
+
   app.get('/influencer', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'influencer-login.html'));
   });
-  
+
   app.get('/influencer/dashboard', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'influencer-dashboard.html'));
   });
-  
+
   app.get('/influencer/register', (req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'influencer-register.html'));
   });
-  
+
   console.log('🌐 Serving frontend files for development');
 } else {
   // Production: API-only, return API info
@@ -218,7 +213,7 @@ if (process.env.NODE_ENV !== 'production') {
       }
     });
   });
-  
+
   console.log('🚀 Running in production mode - API only');
 }
 
@@ -297,12 +292,22 @@ const influencerSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   contact_number: { type: String, required: true, unique: true, index: true },
   password_hash: { type: String, required: true },
-  email: { type: String, trim: true, lowercase: true },
+  email: { type: String, required: true, trim: true, lowercase: true, index: true },
+  influencer_type: {
+    type: String,
+    enum: ['Social Media Influencer', 'Media', 'Celebrity'],
+    required: true
+  },
   type: {
     type: String,
     enum: ['Farmer', 'NGO', 'Youtuber', 'Local Promoter', 'Agricultural Expert', 'Community Leader'],
     required: true
   },
+  social_media_handles: [{
+    platform: { type: String, required: true },
+    handle: { type: String, required: true },
+    followers: { type: Number, default: 0 }
+  }],
   social_link: { type: String, trim: true },
   region: { type: String, required: true, trim: true },
   upi_id: { type: String, required: true, trim: true },
@@ -316,6 +321,11 @@ const influencerSchema = new mongoose.Schema({
   },
   login_enabled: { type: Boolean, default: false },
   notes: { type: String, default: null },
+  admin_messages: [{
+    message: { type: String, required: true },
+    sent_at: { type: Date, default: Date.now },
+    read: { type: Boolean, default: false }
+  }],
   total_earnings: { type: Number, default: 0, min: 0 },
   payout_status: { type: String, enum: ['Paid', 'Pending'], default: 'Pending' },
   referral_limit: { type: Number, default: null, min: 0 },
@@ -375,6 +385,11 @@ const registrationSchema = new mongoose.Schema({
   sowing_date: { type: Date, required: true },
   harvesting_date: { type: Date, default: null },
   crop_types: { type: String, required: true, trim: true },
+  crops: [{ 
+    name: { type: String, required: true, trim: true },
+    area: { type: String, trim: true },
+    variety: { type: String, trim: true }
+  }],
   // Farming Practice
   farming_practice: { type: String, required: true, enum: ['Organic', 'Natural', 'Chemical', 'Mixed'] },
   farming_experience: { type: Number, required: true, min: 0, max: 100 },
@@ -633,6 +648,12 @@ async function ensureDefaultAdmin() {
 }
 
 const BASE_REGISTRATION_AMOUNT = 300;
+const GST_RATE = 0.08; // 8% GST
+
+// Calculate final amount with GST
+function applyGST(amount) {
+  return Math.round(amount * (1 + GST_RATE));
+}
 
 function isCouponWithinValidity(coupon) {
   const now = new Date();
@@ -653,7 +674,8 @@ function isCouponWithinValidity(coupon) {
 
 function calculateDiscountedAmount(baseAmount, coupon) {
   if (!coupon) {
-    return { amount: baseAmount, discount: 0 };
+    const amountWithGST = applyGST(baseAmount);
+    return { amount: amountWithGST, discount: 0, baseAmount, gst: amountWithGST - baseAmount };
   }
 
   let discount = 0;
@@ -663,8 +685,16 @@ function calculateDiscountedAmount(baseAmount, coupon) {
     discount = Math.round(coupon.discount_value);
   }
 
-  const payable = Math.max(0, Math.round(baseAmount - discount));
-  return { amount: payable, discount };
+  const discountedBase = Math.max(0, Math.round(baseAmount - discount));
+  const amountWithGST = applyGST(discountedBase);
+  const gstAmount = amountWithGST - discountedBase;
+
+  return {
+    amount: amountWithGST,
+    discount,
+    baseAmount: discountedBase,
+    gst: gstAmount
+  };
 }
 
 function generateTemporaryPassword(length = 12) {
@@ -930,7 +960,7 @@ app.post('/api/auth/influencer-login', async (req, res) => {
     // Find influencer by contact number
     const influencer = await Influencer.findOne({ contact_number: contactNumber });
     console.log('[Influencer Login] Found influencer:', influencer ? { id: influencer._id, name: influencer.name, contact: influencer.contact_number } : 'NOT FOUND');
-    
+
     if (!influencer) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -963,7 +993,7 @@ app.post('/api/auth/influencer-login', async (req, res) => {
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
-    
+
     if (process.env.NODE_ENV !== 'production') {
       console.log('[Influencer Login] Password match:', passwordMatch);
     }
@@ -1084,8 +1114,10 @@ app.post('/api/influencers/register', async (req, res) => {
       contactNumber,
       password,
       email,
+      influencerType,
       type,
       region,
+      socialMediaHandles,
       socialLink,
       upiId,
       bankDetails,
@@ -1093,11 +1125,20 @@ app.post('/api/influencers/register', async (req, res) => {
     } = req.body || {};
 
     // Validation
-    if (!name || !contactNumber || !type || !password) {
+    if (!name || !contactNumber || !type || !password || !email || !influencerType) {
       console.log('[Influencer Registration] Validation failed - missing required fields');
       return res.status(400).json({
         success: false,
-        message: 'Name, contact number, type, and password are required.'
+        message: 'Name, contact number, email, influencer type, category, and password are required.'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address.'
       });
     }
 
@@ -1116,29 +1157,52 @@ app.post('/api/influencers/register', async (req, res) => {
       });
     }
 
-    // Check for duplicate contact number
+    const validInfluencerTypes = ['Social Media Influencer', 'Media', 'Celebrity'];
+    if (!validInfluencerTypes.includes(influencerType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid influencer type. Must be one of: ' + validInfluencerTypes.join(', ')
+      });
+    }
+
+    // Check for duplicate contact number or email
     const existingInfluencer = await Influencer.findOne({
-      contact_number: contactNumber.trim()
+      $or: [
+        { contact_number: contactNumber.trim() },
+        { email: email.trim().toLowerCase() }
+      ]
     });
 
     if (existingInfluencer) {
-      console.log('[Influencer Registration] Duplicate contact number:', contactNumber);
+      const field = existingInfluencer.contact_number === contactNumber.trim() ? 'contact number' : 'email';
+      console.log('[Influencer Registration] Duplicate ' + field + ':', contactNumber);
       return res.status(400).json({
         success: false,
-        message: 'An application with this contact number already exists. Please contact support if you need assistance.'
+        message: `An application with this ${field} already exists. Please contact support if you need assistance.`
       });
     }
 
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
+    // Process social media handles
+    const processedHandles = Array.isArray(socialMediaHandles)
+      ? socialMediaHandles.filter(h => h.platform && h.handle).map(h => ({
+        platform: h.platform.trim(),
+        handle: h.handle.trim(),
+        followers: parseInt(h.followers) || 0
+      }))
+      : [];
+
     // Create influencer
     const influencer = await Influencer.create({
       name: name.trim(),
       contact_number: contactNumber.trim(),
       password_hash: passwordHash,
-      email: email ? email.trim().toLowerCase() : null,
+      email: email.trim().toLowerCase(),
+      influencer_type: influencerType,
       type,
+      social_media_handles: processedHandles,
       social_link: socialLink || null,
       region: region || null,
       upi_id: upiId || null,
@@ -1147,6 +1211,7 @@ app.post('/api/influencers/register', async (req, res) => {
       login_enabled: true,
       coupon_code: null,
       notes: notes || null,
+      admin_messages: [],
       referral_limit: null,
       referral_uses: 0,
       commission_amount: 0
@@ -1195,13 +1260,16 @@ app.get('/api/validate-coupon', async (req, res) => {
     const normalized = rawCode.toLowerCase();
 
     if (normalized === TEST_REFERRAL_CODE) {
-      const discountedAmount = Math.max(0, BASE_REGISTRATION_AMOUNT - 50);
+      const discountedBase = Math.max(0, BASE_REGISTRATION_AMOUNT - 50);
+      const amountWithGST = applyGST(discountedBase);
       return res.json({
         valid: true,
         influencerName: TEST_REFERRAL_NAME,
         influencerId: null,
-        amount: discountedAmount,
-        discount: BASE_REGISTRATION_AMOUNT - discountedAmount,
+        amount: amountWithGST,
+        discount: BASE_REGISTRATION_AMOUNT - discountedBase,
+        baseAmount: discountedBase,
+        gst: amountWithGST - discountedBase,
         testCoupon: true,
         code: rawCode.toUpperCase()
       });
@@ -1224,7 +1292,7 @@ app.get('/api/validate-coupon', async (req, res) => {
       return res.json({ valid: false });
     }
 
-    const { amount, discount } = calculateDiscountedAmount(BASE_REGISTRATION_AMOUNT, coupon);
+    const { amount, discount, baseAmount, gst } = calculateDiscountedAmount(BASE_REGISTRATION_AMOUNT, coupon);
 
     return res.json({
       valid: true,
@@ -1232,6 +1300,8 @@ app.get('/api/validate-coupon', async (req, res) => {
       influencerId: coupon.influencer._id,
       amount,
       discount,
+      baseAmount,
+      gst,
       commissionAmount: coupon.commission_amount || 0,
       usageCount: coupon.usage_count,
       usageLimit: coupon.usage_limit,
@@ -1316,10 +1386,10 @@ const handleOtpRequest = async (req, res) => {
       // Don't delete session - keep it for verification even if SMS fails
       // This allows testing and fallback scenarios
       console.warn('[OTP] Keeping session active despite dispatch error');
-      
+
       // In non-production, return OTP for testing
       const includeTestOtp = process.env.NODE_ENV !== 'production';
-      
+
       return res.json({
         success: true,
         message: 'OTP generated. SMS delivery may have failed.',
@@ -1897,6 +1967,221 @@ app.delete('/api/admin/influencers/:id', requireAdmin(), async (req, res) => {
   }
 });
 
+// Admin - Assign/Update Coupon Code for Influencer
+app.post('/api/admin/influencers/:id/assign-coupon', requireAdmin(), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { couponCode, customCode, commissionAmount, discountType, discountValue } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid influencer id' });
+    }
+
+    const influencer = await Influencer.findById(id);
+    if (!influencer) {
+      return res.status(404).json({ success: false, message: 'Influencer not found' });
+    }
+
+    let finalCouponCode;
+
+    if (customCode) {
+      // Admin provided custom code
+      finalCouponCode = customCode.toUpperCase().trim();
+
+      // Check if code already exists for another influencer
+      const existing = await Coupon.findOne({
+        code: finalCouponCode,
+        influencer: { $ne: influencer._id }
+      });
+
+      if (existing) {
+        return res.status(400).json({
+          success: false,
+          message: 'This coupon code is already assigned to another influencer'
+        });
+      }
+    } else {
+      // Generate random code
+      const baseCode = influencer.name.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      finalCouponCode = await getUniqueCouponCode(baseCode + Math.floor(1000 + Math.random() * 9000));
+    }
+
+    // Update or create coupon
+    const couponData = {
+      code: finalCouponCode,
+      influencer: influencer._id,
+      commission_amount: commissionAmount || 50,
+      discount_type: discountType || 'flat',
+      discount_value: discountValue || 50,
+      active: true
+    };
+
+    await Coupon.findOneAndUpdate(
+      { influencer: influencer._id },
+      couponData,
+      { upsert: true, new: true }
+    );
+
+    // Update influencer
+    influencer.coupon_code = finalCouponCode;
+    influencer.commission_amount = commissionAmount || 50;
+    await influencer.save();
+
+    res.json({
+      success: true,
+      message: 'Coupon code assigned successfully',
+      couponCode: finalCouponCode
+    });
+  } catch (error) {
+    console.error('Admin assign coupon error:', error);
+    res.status(500).json({ success: false, message: 'Failed to assign coupon code' });
+  }
+});
+
+// Admin - Send Message to Influencer
+app.post('/api/admin/influencers/:id/send-message', requireAdmin(), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { message } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, message: 'Message is required' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid influencer id' });
+    }
+
+    const influencer = await Influencer.findById(id);
+    if (!influencer) {
+      return res.status(404).json({ success: false, message: 'Influencer not found' });
+    }
+
+    influencer.admin_messages.push({
+      message: message.trim(),
+      sent_at: new Date(),
+      read: false
+    });
+
+    await influencer.save();
+
+    res.json({
+      success: true,
+      message: 'Message sent successfully'
+    });
+  } catch (error) {
+    console.error('Admin send message error:', error);
+    res.status(500).json({ success: false, message: 'Failed to send message' });
+  }
+});
+
+// Admin - Send Broadcast Message to Multiple Influencers
+app.post('/api/admin/influencers/broadcast', requireAdmin(), async (req, res) => {
+  try {
+    const { message, influencerIds, filter } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, message: 'Message is required' });
+    }
+
+    let targetInfluencers;
+
+    if (influencerIds && influencerIds.length > 0) {
+      // Send to specific influencers
+      targetInfluencers = await Influencer.find({ _id: { $in: influencerIds } });
+    } else if (filter) {
+      // Send based on filter
+      const query = {};
+      if (filter.approvalStatus) query.approval_status = filter.approvalStatus;
+      if (filter.influencerType) query.influencer_type = filter.influencerType;
+      targetInfluencers = await Influencer.find(query);
+    } else {
+      // Send to all approved influencers
+      targetInfluencers = await Influencer.find({ approval_status: 'approved' });
+    }
+
+    const messageData = {
+      message: message.trim(),
+      sent_at: new Date(),
+      read: false
+    };
+
+    await Influencer.updateMany(
+      { _id: { $in: targetInfluencers.map(i => i._id) } },
+      { $push: { admin_messages: messageData } }
+    );
+
+    res.json({
+      success: true,
+      message: `Message sent to ${targetInfluencers.length} influencer(s)`,
+      count: targetInfluencers.length
+    });
+  } catch (error) {
+    console.error('Admin broadcast message error:', error);
+    res.status(500).json({ success: false, message: 'Failed to send broadcast message' });
+  }
+});
+
+// Admin - Get Registrations with Filters
+app.get('/api/admin/registrations/filtered', requireAdmin(), async (req, res) => {
+  try {
+    const {
+      paymentStatus,
+      influencerId,
+      dateFrom,
+      dateTo,
+      search,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    const query = {};
+
+    if (paymentStatus) query.payment_status = paymentStatus;
+    if (influencerId && mongoose.Types.ObjectId.isValid(influencerId)) {
+      query.influencer = influencerId;
+    }
+    if (dateFrom || dateTo) {
+      query.registration_date = {};
+      if (dateFrom) query.registration_date.$gte = new Date(dateFrom);
+      if (dateTo) query.registration_date.$lte = new Date(dateTo);
+    }
+    if (search) {
+      query.$or = [
+        { farmer_name: { $regex: search, $options: 'i' } },
+        { contact_number: { $regex: search, $options: 'i' } },
+        { reference_id: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [registrations, total] = await Promise.all([
+      Registration.find(query)
+        .populate('influencer', 'name contact_number coupon_code')
+        .sort({ registration_date: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Registration.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      registrations,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Admin filtered registrations error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch registrations' });
+  }
+});
+
 app.get('/api/admin/dashboard/overview', requireAdmin(), async (req, res) => {
   try {
     const [
@@ -2285,6 +2570,62 @@ app.get('/api/influencer/coupons', requireInfluencer(), async (req, res) => {
   }
 });
 
+// Influencer - Get Messages from Admin
+app.get('/api/influencer/messages', requireInfluencer(), async (req, res) => {
+  try {
+    const influencerId = req.authUser.linked_influencer?._id || req.authUser.linked_influencer;
+    if (!influencerId) {
+      return res.status(400).json({ success: false, message: 'Influencer profile not linked.' });
+    }
+
+    const influencer = await Influencer.findById(influencerId).select('admin_messages').lean();
+    if (!influencer) {
+      return res.status(404).json({ success: false, message: 'Influencer not found' });
+    }
+
+    const messages = (influencer.admin_messages || []).sort((a, b) =>
+      new Date(b.sent_at) - new Date(a.sent_at)
+    );
+
+    res.json({
+      success: true,
+      messages,
+      unreadCount: messages.filter(m => !m.read).length
+    });
+  } catch (error) {
+    console.error('Influencer messages error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load messages' });
+  }
+});
+
+// Influencer - Mark Message as Read
+app.post('/api/influencer/messages/:messageId/read', requireInfluencer(), async (req, res) => {
+  try {
+    const influencerId = req.authUser.linked_influencer?._id || req.authUser.linked_influencer;
+    const { messageId } = req.params;
+
+    if (!influencerId) {
+      return res.status(400).json({ success: false, message: 'Influencer profile not linked.' });
+    }
+
+    const influencer = await Influencer.findById(influencerId);
+    if (!influencer) {
+      return res.status(404).json({ success: false, message: 'Influencer not found' });
+    }
+
+    const message = influencer.admin_messages.id(messageId);
+    if (message) {
+      message.read = true;
+      await influencer.save();
+    }
+
+    res.json({ success: true, message: 'Message marked as read' });
+  } catch (error) {
+    console.error('Mark message read error:', error);
+    res.status(500).json({ success: false, message: 'Failed to mark message as read' });
+  }
+});
+
 // Registration: save details before payment
 app.post('/api/registration/save', async (req, res) => {
   try {
@@ -2354,7 +2695,7 @@ app.post('/api/registration/save', async (req, res) => {
     }
 
     const couponInput = (couponCode || data.couponCode || '').trim();
-    let payableAmount = BASE_REGISTRATION_AMOUNT;
+    let payableAmount = applyGST(BASE_REGISTRATION_AMOUNT); // Default with GST
     let discountAmount = 0;
     let influencer = null;
     let commissionAmount = 0;
@@ -2363,8 +2704,9 @@ app.post('/api/registration/save', async (req, res) => {
     if (couponInput) {
       const lower = couponInput.toLowerCase();
       if (lower === TEST_REFERRAL_CODE) {
-        payableAmount = Math.max(0, BASE_REGISTRATION_AMOUNT - 50);
-        discountAmount = BASE_REGISTRATION_AMOUNT - payableAmount;
+        const discountedBase = Math.max(0, BASE_REGISTRATION_AMOUNT - 50);
+        payableAmount = applyGST(discountedBase);
+        discountAmount = BASE_REGISTRATION_AMOUNT - discountedBase;
       } else {
         const normalizedCode = couponInput.toUpperCase();
         couponDocument = await Coupon.findOne({ code: normalizedCode }).populate('influencer');
@@ -2426,6 +2768,16 @@ app.post('/api/registration/save', async (req, res) => {
     registration.sowing_date = data.sowingDate ? new Date(data.sowingDate) : new Date();
     registration.harvesting_date = data.harvestingDate ? new Date(data.harvestingDate) : null;
     registration.crop_types = String(data.cropTypes || '').trim();
+    
+    // Handle multiple crops
+    if (data.crops && Array.isArray(data.crops)) {
+      registration.crops = data.crops.filter(c => c.name).map(c => ({
+        name: String(c.name).trim(),
+        area: c.area ? String(c.area).trim() : '',
+        variety: c.variety ? String(c.variety).trim() : ''
+      }));
+    }
+    
     registration.farming_practice = normalizeFarmingPractice(data.farmingPractice);
     registration.farming_experience = parseInt(data.farmingExperience, 10) || 0;
     registration.irrigation_source = normalizeIrrigation(data.irrigationSource);
@@ -3541,9 +3893,9 @@ async function dispatchOtp(phoneNumber, otpCode) {
   try {
     console.log(`[OTP] Attempting to send SMS to ${destination} via Twilio...`);
     console.log(`[OTP] Using ${twilioMessagingServiceSid ? 'Messaging Service' : 'From Number'}`);
-    
+
     const message = await twilioClient.messages.create(payload);
-    
+
     console.log(`[OTP] ✅ SMS sent successfully - SID: ${message.sid}, Status: ${message.status}`);
     return { ...message, simulated: false };
   } catch (twilioError) {
@@ -3553,7 +3905,7 @@ async function dispatchOtp(phoneNumber, otpCode) {
       status: twilioError.status,
       moreInfo: twilioError.moreInfo
     });
-    
+
     // Fallback to simulated mode if Twilio fails
     console.warn(`[OTP] Falling back to simulated mode. OTP for ${phoneNumber}: ${otpCode}`);
     return { sid: null, simulated: true, otp: otpCode, twilioError: twilioError.message };
@@ -3769,11 +4121,11 @@ app.post('/api/create-order', async (req, res) => {
     const { amount, farmerName, phoneNumber, emailId, registrationReference = '' } = req.body || {};
     const normalizedAmount = Number(amount);
 
-    if (!Number.isFinite(normalizedAmount) || (normalizedAmount !== 30000 && normalizedAmount !== 25000)) {
+    if (!Number.isFinite(normalizedAmount) || (normalizedAmount !== 32400 && normalizedAmount !== 27000)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid amount. Expected Rs 300 (30000 paise) or Rs 250 (25000 paise)',
-        expected: [30000, 25000],
+        message: 'Invalid amount. Expected Rs 324 (32400 paise) or Rs 270 (27000 paise) including 8% GST',
+        expected: [32400, 27000],
         received: amount
       });
     }

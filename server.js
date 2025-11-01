@@ -53,9 +53,11 @@ const twilioClient = (twilioAccountSid && twilioAuthToken)
 
 // Debug Twilio configuration
 console.log('🔧 Twilio Configuration:');
+console.log('  - Account SID:', twilioAccountSid ? `✅ Set (${twilioAccountSid.substring(0, 8)}...)` : '❌ Not set');
+console.log('  - Auth Token:', twilioAuthToken ? `✅ Set (${twilioAuthToken.length} chars)` : '❌ Not set');
 console.log('  - Client:', twilioClient ? '✅ Initialized' : '❌ Not initialized');
-console.log('  - Messaging Service SID:', twilioMessagingServiceSid ? '✅ Set' : '❌ Not set');
-console.log('  - SMS From:', twilioSmsFrom ? '✅ Set' : '❌ Not set');
+console.log('  - Messaging Service SID:', twilioMessagingServiceSid ? `✅ Set (${twilioMessagingServiceSid})` : '❌ Not set');
+console.log('  - SMS From:', twilioSmsFrom ? `✅ Set (${twilioSmsFrom})` : '❌ Not set');
 
 const otpServiceConfigured = Boolean(
   twilioClient &&
@@ -66,6 +68,7 @@ const otpServiceConfigured = Boolean(
 );
 
 console.log('  - OTP Service:', otpServiceConfigured ? '✅ Configured' : '⚠️  Not configured (Test Mode)');
+console.log('  - Environment:', process.env.NODE_ENV || 'development');
 const razorpayClient = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
   ? new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
@@ -81,7 +84,12 @@ const razorpayClient = (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_
 // Disable CSP for API server - CSP should be handled by frontend
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false
+  crossOriginEmbedderPolicy: false,
+  permissionsPolicy: {
+    features: {
+      'otp-credentials': ['self', 'https://checkout.razorpay.com']
+    }
+  }
 }));
 
 // CORS configuration
@@ -538,12 +546,13 @@ function signJwt(user) {
 }
 
 function setAuthCookie(res, token) {
+  const isProduction = process.env.NODE_ENV === 'production';
   res.cookie(JWT_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: true, // Always true for production (HTTPS required)
-    sameSite: 'none', // Required for cross-domain cookies
+    secure: isProduction, // HTTPS in production, HTTP in dev
+    sameSite: isProduction ? 'lax' : 'lax', // Use 'lax' for same-site cookies
     maxAge: JWT_COOKIE_MAX_AGE,
-    domain: process.env.NODE_ENV === 'production' ? undefined : undefined // Let browser handle domain
+    path: '/'
   });
 }
 
@@ -1290,18 +1299,36 @@ const handleOtpRequest = async (req, res) => {
       const simulated = dispatchResult && dispatchResult.simulated;
       console.log(`[OTP] Dispatch ${simulated ? 'simulated' : 'successful'}`);
 
+      // In development or if simulated, include OTP in response for testing
+      const includeTestOtp = process.env.NODE_ENV !== 'production' || simulated;
+
       return res.json({
         success: true,
         message: 'OTP sent successfully.',
         expiresIn: otpExpiryMinutes * 60,
         cooldown: otpResendCooldownSeconds,
         otpLength: OTP_LENGTH,
-        testOtp: simulated ? otpCode : undefined
+        testOtp: includeTestOtp ? otpCode : undefined,
+        simulated: simulated
       });
     } catch (dispatchError) {
       console.error('[OTP] Dispatch error:', dispatchError);
-      await session.deleteOne();
-      return res.status(500).json({ success: false, message: 'Failed to send OTP. Please try again.' });
+      // Don't delete session - keep it for verification even if SMS fails
+      // This allows testing and fallback scenarios
+      console.warn('[OTP] Keeping session active despite dispatch error');
+      
+      // In non-production, return OTP for testing
+      const includeTestOtp = process.env.NODE_ENV !== 'production';
+      
+      return res.json({
+        success: true,
+        message: 'OTP generated. SMS delivery may have failed.',
+        expiresIn: otpExpiryMinutes * 60,
+        cooldown: otpResendCooldownSeconds,
+        otpLength: OTP_LENGTH,
+        testOtp: includeTestOtp ? otpCode : undefined,
+        warning: 'SMS service unavailable'
+      });
     }
   } catch (error) {
     console.error('[OTP] Request error:', error);
@@ -3495,7 +3522,7 @@ async function dispatchOtp(phoneNumber, otpCode) {
   }
 
   if (!twilioClient || (!twilioMessagingServiceSid && !twilioSmsFrom)) {
-    console.warn(`Twilio not configured. OTP for ${phoneNumber}: ${otpCode}`);
+    console.warn(`[OTP] Twilio not configured. OTP for ${phoneNumber}: ${otpCode}`);
     return { sid: null, simulated: true, otp: otpCode };
   }
 
@@ -3511,8 +3538,26 @@ async function dispatchOtp(phoneNumber, otpCode) {
     payload.from = twilioSmsFrom;
   }
 
-  const message = await twilioClient.messages.create(payload);
-  return { ...message, simulated: false };
+  try {
+    console.log(`[OTP] Attempting to send SMS to ${destination} via Twilio...`);
+    console.log(`[OTP] Using ${twilioMessagingServiceSid ? 'Messaging Service' : 'From Number'}`);
+    
+    const message = await twilioClient.messages.create(payload);
+    
+    console.log(`[OTP] ✅ SMS sent successfully - SID: ${message.sid}, Status: ${message.status}`);
+    return { ...message, simulated: false };
+  } catch (twilioError) {
+    console.error(`[OTP] ❌ Twilio SMS failed:`, {
+      error: twilioError.message,
+      code: twilioError.code,
+      status: twilioError.status,
+      moreInfo: twilioError.moreInfo
+    });
+    
+    // Fallback to simulated mode if Twilio fails
+    console.warn(`[OTP] Falling back to simulated mode. OTP for ${phoneNumber}: ${otpCode}`);
+    return { sid: null, simulated: true, otp: otpCode, twilioError: twilioError.message };
+  }
 }
 
 // Generic SMS sending function

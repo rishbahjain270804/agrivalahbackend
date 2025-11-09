@@ -100,8 +100,11 @@ app.use(cors({
       'http://agrivalah.in',
       'https://www.agrivalah.in',
       'http://www.agrivalah.in',
+      'https://agrivalahfrontend.vercel.app',
+      'https://agrivalahbackend.vercel.app',
       /\.hostinger\.site$/,
       /\.hpanel\.hostinger\.com$/,
+      /\.vercel\.app$/,
       // Allow any domain in development
       ...(process.env.NODE_ENV !== 'production' ? [/.*/] : [])
     ];
@@ -4761,24 +4764,29 @@ process.on('SIGINT', async () => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log('🚀 Server Configuration:');
-  console.log(`   • Port: ${PORT}`);
-  console.log(`   • Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`   • Database: ${process.env.MONGODB_URI ? 'Configured' : 'Local MongoDB'}`);
-  console.log(`   • Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not configured'}`);
-  console.log('');
-  console.log('🌟 API Endpoints Available:');
-  console.log('   • GET  /api/health-check');
-  console.log('   • POST /api/create-order');
-  console.log('   • POST /api/verify-payment');
-  console.log('   • POST /api/submit-registration');
-  console.log('   • POST /api/get-registration');
-  console.log('   • GET  /api/list-registrations');
-  console.log('   • GET  /api/stats/dashboard');
-  console.log('');
-  console.log(`✅ Server running at http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health-check`);
-});
+// Start server (only in non-serverless environments)
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log('🚀 Server Configuration:');
+    console.log(`   • Port: ${PORT}`);
+    console.log(`   • Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   • Database: ${process.env.MONGODB_URI ? 'Configured' : 'Local MongoDB'}`);
+    console.log(`   • Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not configured'}`);
+    console.log('');
+    console.log('🌟 API Endpoints Available:');
+    console.log('   • GET  /api/health-check');
+    console.log('   • POST /api/create-order');
+    console.log('   • POST /api/verify-payment');
+    console.log('   • POST /api/submit-registration');
+    console.log('   • POST /api/get-registration');
+    console.log('   • GET  /api/list-registrations');
+    console.log('   • GET  /api/stats/dashboard');
+    console.log('');
+    console.log(`✅ Server running at http://localhost:${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/api/health-check`);
+  });
+}
+
+// Export for Vercel serverless
+module.exports = app;
 

@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.example
+.env.vps
+.git
+*.log
+test-otp.js
+create-admin.js
+start-server.bat

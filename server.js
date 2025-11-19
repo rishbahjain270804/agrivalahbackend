@@ -4415,8 +4415,8 @@ app.get('/api/get-public-keys', (req, res) => {
     const publicKeys = {
       razorpay_key_id: process.env.RAZORPAY_KEY_ID, // This is safe to expose
       currency: 'INR',
-      amount: 30000, // Fixed amount
-      company_name: 'Cyano Foods India',
+      amount: 50000, // ₹500 default amount (in paise)
+      company_name: 'Agrivalah Natural Farming',
       description: 'PGS-India Natural Farming Certification'
     };
 
@@ -4448,11 +4448,11 @@ app.post('/api/create-order', async (req, res) => {
     const { amount, farmerName, phoneNumber, emailId, registrationReference = '' } = req.body || {};
     const normalizedAmount = Number(amount);
 
-    if (!Number.isFinite(normalizedAmount) || (normalizedAmount !== 32400 && normalizedAmount !== 27000)) {
+    if (!Number.isFinite(normalizedAmount) || (normalizedAmount !== 50000 && normalizedAmount !== 45000)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid amount. Expected Rs 324 (32400 paise) or Rs 270 (27000 paise) including 8% GST',
-        expected: [32400, 27000],
+        message: 'Invalid amount. Expected ₹500 (50000 paise) or ₹450 (45000 paise) with coupon - all inclusive',
+        expected: [50000, 45000],
         received: amount
       });
     }

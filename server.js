@@ -3560,16 +3560,15 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
       console.error('Failed to create user account:', userError);
     }
 
-    // Send SMS notification with welcome message
+    // Send SMS notification
     try {
-      const loginUrl = `${process.env.FRONTEND_URL || 'https://agrivalah.in'}/partner/login`;
-      const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Partner application has been APPROVED.\n\nWelcome Onboard! 🎉\n\nLogin Details:\nMobile: ${influencer.contact_number}\nPassword: (Your registered password)\nCoupon Code: ${influencer.coupon_code}\n\nLogin: ${loginUrl}\n\nEarn ₹50 per referral!`;
+      const loginUrl = `${process.env.FRONTEND_URL || 'https://agrivalah.in'}/influencer-login.html`;
+      const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Partner application is APPROVED.\n\nLogin at: ${loginUrl}\nMobile: ${influencer.contact_number}\nPassword: Your registered password\nCoupon: ${influencer.coupon_code}\n\nEarn ₹50 per referral!`;
 
       await sendSms(influencer.contact_number, smsMessage);
-      console.log(`Welcome SMS sent to ${influencer.contact_number}`);
+      console.log(`✅ Approval SMS sent to ${influencer.contact_number}`);
     } catch (smsError) {
-      console.error('Failed to send SMS notification:', smsError);
-      // Don't fail the approval if SMS fails
+      console.error('⚠️ SMS send failed (non-critical):', smsError.message);
     }
 
     res.json({
@@ -3578,7 +3577,7 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
       influencer,
       credentials: {
         mobile: influencer.contact_number,
-        password: tempPassword,
+        message: 'Partner will use their registered password',
         couponCode: influencer.coupon_code
       }
     });
@@ -3606,14 +3605,14 @@ app.post('/api/admin/influencers/:id/reject', requireAdmin(), async (req, res) =
     }
     await influencer.save();
 
-    // Send SMS notification about rejection
+    // Send SMS notification
     try {
-      const smsMessage = `Dear ${influencer.name}, your Agrivalah Influencer application has been reviewed. Unfortunately, we cannot approve your application at this time.${reason ? `\n\nReason: ${reason}` : ''}\n\nYou can reapply or contact support for more information.`;
+      const smsMessage = `Dear ${influencer.name}, your Agrivalah Partner application has been reviewed. We cannot approve it at this time.${reason ? ` Reason: ${reason}` : ''} You may reapply or contact support.`;
 
       await sendSms(influencer.contact_number, smsMessage);
-      console.log(`Rejection SMS sent to ${influencer.contact_number}`);
+      console.log(`✅ Rejection SMS sent to ${influencer.contact_number}`);
     } catch (smsError) {
-      console.error('Failed to send rejection SMS:', smsError);
+      console.error('⚠️ SMS send failed (non-critical):', smsError.message);
     }
 
     res.json({ success: true, message: 'Influencer rejected and notified via SMS', influencer });
@@ -3914,6 +3913,16 @@ async function dispatchOtp(phoneNumber, otpCode) {
 
 // Generic SMS sending function
 // REAL SMS SENDING - ALWAYS ENABLED
+// ================================================
+// SMS SERVICE - Clean and Reliable
+// ================================================
+
+/**
+ * Send SMS via Twilio
+ * @param {string} phoneNumber - 10 digit Indian mobile number
+ * @param {string} message - SMS message content
+ * @returns {Promise<object>} SMS result with success status
+ */
 async function sendSms(phoneNumber, message) {
   if (!phoneNumber || !message) {
     throw new Error('Phone number and message are required');
@@ -3949,36 +3958,39 @@ async function sendSms(phoneNumber, message) {
       smsPayload.from = twilioSmsFrom;
     }
 
-    console.log(`\n[SMS] 📱 Sending SMS to ${destination}...`);
+    console.log(`\n[SMS] 📱 Sending to ${destination}...`);
     const result = await twilioClient.messages.create(smsPayload);
 
-    console.log(`[SMS] ✅ SMS SENT SUCCESSFULLY!`);
-    console.log(`[SMS] SID: ${result.sid}`);
-    console.log(`[SMS] Status: ${result.status}`);
-    console.log(`[SMS] To: ${result.to}`);
-    console.log(`[SMS] From: ${result.from}\n`);
+    console.log(`[SMS] ✅ SUCCESS - SID: ${result.sid}\n`);
 
-    return { simulated: false, sid: result.sid, status: result.status };
+    return { 
+      success: true,
+      simulated: false, 
+      sid: result.sid, 
+      status: result.status 
+    };
   } catch (error) {
-    console.error(`\n[SMS] ❌ FAILED to send SMS to ${destination}`);
-    console.error(`[SMS] Error: ${error.message}`);
-    if (error.code) console.error(`[SMS] Error Code: ${error.code}`);
-    if (error.moreInfo) console.error(`[SMS] More Info: ${error.moreInfo}\n`);
+    console.error(`\n[SMS] ❌ FAILED to ${destination}`);
+    console.error(`[SMS] Error: ${error.message}\n`);
     throw error;
   }
 }
 
+/**
+ * Send registration completion notification
+ */
 async function sendCompletionNotifications(phoneNumber, referenceId) {
   if (!phoneNumber) {
     return;
   }
 
-  const smsMessage = `Agrivalah: Registration successful. Reference ID ${referenceId}. We will contact you shortly.`;
+  const smsMessage = `Agrivalah: Registration complete! Reference ID: ${referenceId}. We'll contact you soon. Thank you!`;
 
   try {
     await sendSms(phoneNumber, smsMessage);
+    console.log(`✅ Registration SMS sent to ${phoneNumber}`);
   } catch (error) {
-    console.warn('SMS notification failed:', error.message);
+    console.error('⚠️ SMS send failed (non-critical):', error.message);
   }
 }
 

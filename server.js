@@ -377,6 +377,7 @@ const registrationSchema = new mongoose.Schema({
   mandal_block: { type: String, required: true, trim: true, maxlength: 100 },
   district: { type: String, required: true, trim: true, maxlength: 100 },
   state: { type: String, required: true, trim: true, maxlength: 100 },
+  pincode: { type: String, default: null, match: /^\d{6}$/ },
   // Land Information
   khasra_passbook: { type: String, default: null },
   plot_no: { type: String, default: null },
@@ -408,7 +409,7 @@ const registrationSchema = new mongoose.Schema({
   commission_amount: { type: Number, default: 0 },
   commission_paid: { type: Boolean, default: false },
   coupon_discount: { type: Number, default: 0 },
-  payment_amount: { type: Number, default: 300 },
+  payment_amount: { type: Number, default: 500 },
   payment_id: { type: String, default: null, index: true },
   order_id: { type: String, default: null },
   // System Information
@@ -650,12 +651,11 @@ async function ensureDefaultAdmin() {
   console.log(`Default admin created for ${ADMIN_EMAIL}`);
 }
 
-const BASE_REGISTRATION_AMOUNT = 300;
-const GST_RATE = 0.08; // 8% GST
+const BASE_REGISTRATION_AMOUNT = 500; // All taxes included
 
-// Calculate final amount with GST
+// No GST calculation needed - price is all-inclusive
 function applyGST(amount) {
-  return Math.round(amount * (1 + GST_RATE));
+  return amount; // Return as-is, no GST needed
 }
 
 function isCouponWithinValidity(coupon) {
@@ -677,8 +677,8 @@ function isCouponWithinValidity(coupon) {
 
 function calculateDiscountedAmount(baseAmount, coupon) {
   if (!coupon) {
-    const amountWithGST = applyGST(baseAmount);
-    return { amount: amountWithGST, discount: 0, baseAmount, gst: amountWithGST - baseAmount };
+    // No coupon - return base amount (all-inclusive pricing)
+    return { amount: baseAmount, discount: 0, baseAmount, gst: 0 };
   }
 
   let discount = 0;
@@ -688,15 +688,13 @@ function calculateDiscountedAmount(baseAmount, coupon) {
     discount = Math.round(coupon.discount_value);
   }
 
-  const discountedBase = Math.max(0, Math.round(baseAmount - discount));
-  const amountWithGST = applyGST(discountedBase);
-  const gstAmount = amountWithGST - discountedBase;
+  const finalAmount = Math.max(0, Math.round(baseAmount - discount));
 
   return {
-    amount: amountWithGST,
+    amount: finalAmount,
     discount,
-    baseAmount: discountedBase,
-    gst: gstAmount
+    baseAmount: finalAmount,
+    gst: 0 // No separate GST - all-inclusive pricing
   };
 }
 
@@ -738,7 +736,7 @@ async function upsertInfluencerUser({
   loginEnabled = true,
   forcePasswordReset = false
 }) {
-  const normalizedEmail = (email || influencer.email || `${influencer.contact_number}@cyano.in`).toLowerCase();
+  const normalizedEmail = (email || influencer.email || `${influencer.contact_number}@agrivalah.in`).toLowerCase();
 
   let user = await User.findOne({ linked_influencer: influencer._id });
   const passwordHash = password ? await bcrypt.hash(password, PASSWORD_SALT_ROUNDS) : undefined;
@@ -760,12 +758,14 @@ async function upsertInfluencerUser({
     Object.assign(user, update);
     await user.save();
   } else {
-    if (!passwordHash) {
-      throw new Error('Password is required when creating a new influencer user');
+    // Use influencer's existing password_hash if no new password provided
+    const finalPasswordHash = passwordHash || influencer.password_hash;
+    if (!finalPasswordHash) {
+      throw new Error('Password is required when creating a new partner user');
     }
     user = await User.create({
       ...update,
-      password_hash: passwordHash
+      password_hash: finalPasswordHash
     });
   }
 
@@ -1263,16 +1263,16 @@ app.get('/api/validate-coupon', async (req, res) => {
     const normalized = rawCode.toLowerCase();
 
     if (normalized === TEST_REFERRAL_CODE) {
-      const discountedBase = Math.max(0, BASE_REGISTRATION_AMOUNT - 50);
-      const amountWithGST = applyGST(discountedBase);
+      const discountAmount = 50;
+      const finalAmount = Math.max(0, BASE_REGISTRATION_AMOUNT - discountAmount);
       return res.json({
         valid: true,
         influencerName: TEST_REFERRAL_NAME,
         influencerId: null,
-        amount: amountWithGST,
-        discount: BASE_REGISTRATION_AMOUNT - discountedBase,
-        baseAmount: discountedBase,
-        gst: amountWithGST - discountedBase,
+        amount: finalAmount,
+        discount: discountAmount,
+        baseAmount: finalAmount,
+        gst: 0, // All-inclusive pricing
         testCoupon: true,
         code: rawCode.toUpperCase()
       });
@@ -2887,7 +2887,7 @@ app.post('/api/registration/complete', async (req, res) => {
       return res.json({ success: true, message: 'Registration already completed', referenceId: reference, registrationId: registration._id });
     }
 
-    const amountFromDb = Number(registration.payment_amount) || 300;
+    const amountFromDb = Number(registration.payment_amount) || 500;
     let paidAmount = paymentAmount !== undefined && paymentAmount !== null
       ? Number(paymentAmount)
       : amountFromDb;
@@ -3087,7 +3087,7 @@ app.post('/api/admin/registrations/manual', requireAdmin(), async (req, res) => 
     let influencer = null;
     let commissionAmount = 0;
     let couponDiscount = 0;
-    let paymentAmount = Number(regData.payment_amount) || 300;
+    let paymentAmount = Number(regData.payment_amount) || 500;
 
     if (regData.coupon_code && regData.coupon_code.trim()) {
       const couponCode = regData.coupon_code.trim().toUpperCase();
@@ -3271,7 +3271,7 @@ app.post('/api/admin/registrations/bulk', requireAdmin(), async (req, res) => {
         let influencer = null;
         let commissionAmount = 0;
         let couponDiscount = 0;
-        let paymentAmount = Number(regData.payment_amount) || 300;
+        let paymentAmount = Number(regData.payment_amount) || 500;
 
         if (regData.coupon_code && regData.coupon_code.trim()) {
           const couponCode = regData.coupon_code.trim().toUpperCase();
@@ -3545,34 +3545,31 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
       });
     }
 
-    // Create user account for influencer
-    let tempPassword = null;
+    // Create user account for partner using their registered password
     try {
-      tempPassword = generateTemporaryPassword();
       await upsertInfluencerUser({
         influencer,
-        email: influencer.email || `${influencer.contact_number}@cyano.in`,
-        password: tempPassword,
+        email: influencer.email || `${influencer.contact_number}@agrivalah.in`,
+        password: null, // Use existing password_hash from influencer record
         status: USER_STATUS.ACTIVE,
         loginEnabled: true,
-        forcePasswordReset: true
+        forcePasswordReset: false // They can change it from dashboard
       });
-      console.log(`Influencer ${influencer.name} approved. Temp password: ${tempPassword}`);
+      console.log(`Partner ${influencer.name} approved using their registered password`);
     } catch (userError) {
       console.error('Failed to create user account:', userError);
     }
 
-    // Send SMS notification with login credentials
-    if (tempPassword) {
-      try {
-        const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Influencer application has been APPROVED.\n\nYour Login Credentials:\nMobile: ${influencer.contact_number}\nPassword: ${tempPassword}\nCoupon Code: ${influencer.coupon_code}\n\nLogin at: ${process.env.FRONTEND_URL || 'https://agrivalah.com'}/influencer/login\n\nEarn ₹50 per referral!`;
+    // Send SMS notification with welcome message
+    try {
+      const loginUrl = `${process.env.FRONTEND_URL || 'https://agrivalah.in'}/partner/login`;
+      const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Partner application has been APPROVED.\n\nWelcome Onboard! 🎉\n\nLogin Details:\nMobile: ${influencer.contact_number}\nPassword: (Your registered password)\nCoupon Code: ${influencer.coupon_code}\n\nLogin: ${loginUrl}\n\nEarn ₹50 per referral!`;
 
-        await sendSms(influencer.contact_number, smsMessage);
-        console.log(`SMS sent to ${influencer.contact_number} with login credentials`);
-      } catch (smsError) {
-        console.error('Failed to send SMS notification:', smsError);
-        // Don't fail the approval if SMS fails
-      }
+      await sendSms(influencer.contact_number, smsMessage);
+      console.log(`Welcome SMS sent to ${influencer.contact_number}`);
+    } catch (smsError) {
+      console.error('Failed to send SMS notification:', smsError);
+      // Don't fail the approval if SMS fails
     }
 
     res.json({
@@ -3881,7 +3878,7 @@ async function dispatchOtp(phoneNumber, otpCode) {
     return { sid: null, simulated: true, otp: otpCode };
   }
 
-  const messageBody = `Your Cyano Veda verification code is ${otpCode}. It is valid for ${otpExpiryMinutes} minutes.`;
+  const messageBody = `Your Agrivalah verification code is ${otpCode}. It is valid for ${otpExpiryMinutes} minutes.`;
   const payload = {
     to: destination,
     body: messageBody
@@ -3976,7 +3973,7 @@ async function sendCompletionNotifications(phoneNumber, referenceId) {
     return;
   }
 
-  const smsMessage = `Cyano Veda: Registration successful. Reference ID ${referenceId}. We will contact you shortly.`;
+  const smsMessage = `Agrivalah: Registration successful. Reference ID ${referenceId}. We will contact you shortly.`;
 
   try {
     await sendSms(phoneNumber, smsMessage);
@@ -4065,6 +4062,333 @@ async function updateDailyStats(type, increment = 1, additionalData = {}) {
     console.error('Error updating daily stats:', error);
   }
 }
+
+// ================================================
+// ADVANCED FEATURES
+// ================================================
+
+// Admin - Update Registration Price
+app.put('/api/admin/settings/registration-price', requireAdmin(), async (req, res) => {
+  try {
+    const { newPrice } = req.body;
+
+    if (!newPrice || typeof newPrice !== 'number' || newPrice < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid price. Must be a positive number.'
+      });
+    }
+
+    // Store in database as system setting
+    const SystemSettings = mongoose.models.SystemSettings || mongoose.model('SystemSettings', new mongoose.Schema({
+      key: { type: String, required: true, unique: true },
+      value: mongoose.Schema.Types.Mixed,
+      updated_at: { type: Date, default: Date.now },
+      updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    }));
+
+    await SystemSettings.findOneAndUpdate(
+      { key: 'registration_price' },
+      {
+        value: newPrice,
+        updated_at: new Date(),
+        updated_by: req.user._id
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log(`✅ Registration price updated to ₹${newPrice} by admin ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: `Registration price updated to ₹${newPrice}`,
+      newPrice,
+      effectiveImmediately: true
+    });
+
+  } catch (error) {
+    console.error('❌ Update registration price error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update registration price'
+    });
+  }
+});
+
+// Get Current Registration Price
+app.get('/api/settings/registration-price', async (req, res) => {
+  try {
+    const SystemSettings = mongoose.models.SystemSettings;
+    
+    if (!SystemSettings) {
+      return res.json({
+        success: true,
+        price: BASE_REGISTRATION_AMOUNT,
+        source: 'default'
+      });
+    }
+
+    const setting = await SystemSettings.findOne({ key: 'registration_price' });
+
+    res.json({
+      success: true,
+      price: setting ? setting.value : BASE_REGISTRATION_AMOUNT,
+      source: setting ? 'database' : 'default',
+      lastUpdated: setting ? setting.updated_at : null
+    });
+
+  } catch (error) {
+    console.error('❌ Get registration price error:', error);
+    res.json({
+      success: true,
+      price: BASE_REGISTRATION_AMOUNT,
+      source: 'default'
+    });
+  }
+});
+
+// Partner - Request Password Reset OTP
+app.post('/api/partner/password-reset/request', async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    // Find partner by phone
+    const partner = await Influencer.findOne({ phone_number: phone, status: 'approved' });
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        message: 'No approved partner found with this phone number'
+      });
+    }
+
+    // Generate and send OTP
+    const otp = generateOTP();
+    const otpHash = await bcrypt.hash(otp, PASSWORD_SALT_ROUNDS);
+
+    // Store OTP session
+    await OtpSession.findOneAndUpdate(
+      { phone_number: phone, type: 'password_reset' },
+      {
+        phone_number: phone,
+        otp_hash: otpHash,
+        type: 'password_reset',
+        attempts: 0,
+        expires_at: new Date(Date.now() + OTP_EXPIRY_MS),
+        metadata: { partner_id: partner._id }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Send OTP via SMS
+    const message = `Your Agrivalah partner password reset code is ${otp}. Valid for 5 minutes. Do not share this code.`;
+    
+    if (twilioClient) {
+      try {
+        await twilioClient.messages.create({
+          body: message,
+          messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+          to: phone
+        });
+        console.log(`✅ Password reset OTP sent to ${phone}`);
+      } catch (twilioError) {
+        console.error('❌ Twilio SMS error:', twilioError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to send OTP. Please try again.'
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'OTP sent to your registered phone number',
+      expiresIn: 5 // minutes
+    });
+
+  } catch (error) {
+    console.error('❌ Password reset request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process password reset request'
+    });
+  }
+});
+
+// Partner - Verify OTP and Reset Password
+app.post('/api/partner/password-reset/verify', async (req, res) => {
+  try {
+    const { phone, otp, newPassword } = req.body;
+
+    if (!phone || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone, OTP, and new password are required'
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long'
+      });
+    }
+
+    // Find OTP session
+    const otpSession = await OtpSession.findOne({
+      phone_number: phone,
+      type: 'password_reset'
+    });
+
+    if (!otpSession) {
+      return res.status(400).json({
+        success: false,
+        message: 'No password reset request found. Please request a new OTP.'
+      });
+    }
+
+    // Check expiry
+    if (new Date() > otpSession.expires_at) {
+      await OtpSession.deleteOne({ _id: otpSession._id });
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.'
+      });
+    }
+
+    // Check attempts
+    if (otpSession.attempts >= 3) {
+      await OtpSession.deleteOne({ _id: otpSession._id });
+      return res.status(400).json({
+        success: false,
+        message: 'Too many failed attempts. Please request a new OTP.'
+      });
+    }
+
+    // Verify OTP
+    const isValid = await bcrypt.compare(otp, otpSession.otp_hash);
+
+    if (!isValid) {
+      otpSession.attempts += 1;
+      await otpSession.save();
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid OTP. ${3 - otpSession.attempts} attempts remaining.`
+      });
+    }
+
+    // Find partner and update password
+    const partner = await Influencer.findById(otpSession.metadata.partner_id);
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Partner not found'
+      });
+    }
+
+    // Hash new password and update
+    const passwordHash = await bcrypt.hash(newPassword, PASSWORD_SALT_ROUNDS);
+    partner.password_hash = passwordHash;
+    await partner.save();
+
+    // Also update in User collection if exists
+    const user = await User.findOne({ 
+      influencer_id: partner._id,
+      role: USER_ROLES.INFLUENCER 
+    });
+
+    if (user) {
+      user.password_hash = passwordHash;
+      await user.save();
+    }
+
+    // Delete OTP session
+    await OtpSession.deleteOne({ _id: otpSession._id });
+
+    console.log(`✅ Password reset successful for partner ${partner.phone_number}`);
+
+    res.json({
+      success: true,
+      message: 'Password reset successful. You can now login with your new password.'
+    });
+
+  } catch (error) {
+    console.error('❌ Password reset verify error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset password'
+    });
+  }
+});
+
+// Generate WhatsApp Share Link with Auto-Apply Referral
+app.get('/api/partner/whatsapp-share/:referralCode', async (req, res) => {
+  try {
+    const { referralCode } = req.params;
+
+    if (!referralCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Referral code is required'
+      });
+    }
+
+    // Verify referral code exists
+    const partner = await Influencer.findOne({ 
+      coupon_code: referralCode.toUpperCase(),
+      status: 'approved' 
+    });
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invalid referral code'
+      });
+    }
+
+    // Create registration URL with auto-apply referral
+    const frontendUrl = process.env.FRONTEND_URL || 'https://agrivalah.in';
+    const registrationUrl = `${frontendUrl}/?ref=${referralCode.toUpperCase()}`;
+
+    // Create WhatsApp share message
+    const message = encodeURIComponent(
+      `🌾 Join Agrivalah Natural Farming! 🌾\n\n` +
+      `Get PGS-India certification for just ₹500!\n\n` +
+      `✅ 1 Season validity\n` +
+      `✅ Government recognized\n` +
+      `✅ 15-day processing\n\n` +
+      `Use my referral code: ${referralCode.toUpperCase()}\n` +
+      `Get instant ₹50 discount!\n\n` +
+      `Register now: ${registrationUrl}`
+    );
+
+    const whatsappUrl = `https://wa.me/?text=${message}`;
+
+    res.json({
+      success: true,
+      whatsappUrl,
+      registrationUrl,
+      referralCode: referralCode.toUpperCase(),
+      message: 'WhatsApp share link generated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ WhatsApp share link error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate share link'
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health-check', (req, res) => {
@@ -4451,7 +4775,7 @@ app.post('/api/submit-registration', async (req, res) => {
       influencer: req.body.influencer || null,
       commission_amount: Number(req.body.commissionAmount) || 0,
       commission_paid: req.body.commissionPaid === true,
-      payment_amount: Number(req.body.paymentAmount) || 300,
+      payment_amount: Number(req.body.paymentAmount) || 500,
       payment_id: req.body.paymentId || null,
       order_id: req.body.orderId || null,
       otp_token: req.body.otpToken || null,

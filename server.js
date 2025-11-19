@@ -3562,7 +3562,7 @@ app.post('/api/admin/influencers/:id/approve', requireAdmin(), async (req, res) 
 
     // Send SMS notification
     try {
-      const loginUrl = `${process.env.FRONTEND_URL || 'https://agrivalah.in'}/influencer-login.html`;
+      const loginUrl = `${process.env.FRONTEND_URL || 'https://agrivalah.in'}/influencer`;
       const smsMessage = `Congratulations ${influencer.name}! Your Agrivalah Partner application is APPROVED.\n\nLogin at: ${loginUrl}\nMobile: ${influencer.contact_number}\nPassword: Your registered password\nCoupon: ${influencer.coupon_code}\n\nEarn ₹50 per referral!`;
 
       await sendSms(influencer.contact_number, smsMessage);

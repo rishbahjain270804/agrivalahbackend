@@ -2705,7 +2705,6 @@ app.post('/api/registration/save', async (req, res) => {
     }
 
     // Check for duplicate phone number in farmers and influencers
-    const phoneNumber = data.contactNumber;
     const [existingFarmer, existingInfluencer] = await Promise.all([
       Registration.findOne({ contact_number: phoneNumber }),
       Influencer.findOne({ contact_number: phoneNumber })

@@ -372,18 +372,29 @@ const registrationSchema = new mongoose.Schema({
   contact_number: { type: String, required: true, match: /^[6-9]\d{9}$/, index: true },
   email_id: { type: String, default: null, match: /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/, lowercase: true },
   aadhaar_farmer_id: { type: String, default: null, match: /^\d{12}$/ },
+  gender: { type: String, required: true, enum: ['Male', 'Female', 'Other'] },
+  category: { type: String, required: true, enum: ['General', 'OBC', 'SC', 'ST'] },
+  farmer_age: { type: Number, required: true, min: 18, max: 100 },
+  // Bank Details
+  bank_name: { type: String, required: true, trim: true },
+  bank_account_number: { type: String, required: true, trim: true },
+  bank_ifsc: { type: String, required: true, trim: true, uppercase: true, match: /^[A-Z]{4}0[A-Z0-9]{6}$/ },
   // Location Information
   village_panchayat: { type: String, required: true, trim: true, maxlength: 100 },
   mandal_block: { type: String, required: true, trim: true, maxlength: 100 },
+  sub_district: { type: String, default: null, trim: true, maxlength: 100 },
   district: { type: String, required: true, trim: true, maxlength: 100 },
   state: { type: String, required: true, trim: true, maxlength: 100 },
   pincode: { type: String, default: null, match: /^\d{6}$/ },
+  house_number: { type: String, default: null, trim: true },
+  landmark: { type: String, default: null, trim: true },
   // Land Information
   khasra_passbook: { type: String, default: null },
   plot_no: { type: String, default: null },
   total_land: { type: Number, required: true, min: 0.1, max: 10000 },
   land_unit: { type: String, required: true, enum: ['Acre', 'Hectare', 'Bigha', 'Guntha'] },
   area_natural_farming: { type: Number, required: true, min: 0.1, max: 10000 },
+  land_ownership: { type: String, required: true, enum: ['Own', 'Rented', 'Lease', 'Family'] },
   // Crop Information
   present_crop: { type: String, default: null, trim: true },
   sowing_date: { type: Date, required: true },
@@ -394,12 +405,24 @@ const registrationSchema = new mongoose.Schema({
     area: { type: String, trim: true },
     variety: { type: String, trim: true }
   }],
+  expected_yield: { type: Number, default: null, min: 0 },
+  self_consumption: { type: Number, default: null, min: 0 },
+  cropping_seasons: { type: [String], default: [] },
   // Farming Practice
   farming_practice: { type: String, required: true, enum: ['Organic', 'Natural', 'Chemical', 'Mixed'] },
   farming_experience: { type: Number, required: true, min: 0, max: 100 },
   irrigation_source: { type: String, required: true, enum: ['Rainwater', 'Borewell', 'Canal', 'River', 'Pond', 'Other'] },
+  irrigation_methods: { type: String, default: 'Irrigation', enum: ['Irrigation', 'Rainfed'] },
   // Additional Information
   livestock: { type: [String], default: [] },
+  livestock_quantity: { type: Number, default: 0, min: 0 },
+  machineries: { type: [String], default: [] },
+  godam_count: { type: Number, default: 0, min: 0 },
+  godam_capacity: { type: Number, default: 0, min: 0 },
+  compost_facility: { type: String, default: 'No', enum: ['Yes', 'No'] },
+  process_facility: { type: String, default: 'No', enum: ['Yes', 'No'] },
+  other_facility: { type: String, default: 'No', enum: ['Yes', 'No'] },
+  last_chemical_date: { type: Date, default: null },
   willing_to_adopt: { type: String, default: 'Maybe' },
   additional_details: { type: mongoose.Schema.Types.Mixed, default: {} },
   terms_agreement: { type: Boolean, default: false },
@@ -1169,12 +1192,15 @@ app.post('/api/influencers/register', async (req, res) => {
     }
 
     // Check for duplicate contact number or email
-    const existingInfluencer = await Influencer.findOne({
-      $or: [
-        { contact_number: contactNumber.trim() },
-        { email: email.trim().toLowerCase() }
-      ]
-    });
+    const [existingInfluencer, existingFarmer] = await Promise.all([
+      Influencer.findOne({
+        $or: [
+          { contact_number: contactNumber.trim() },
+          { email: email.trim().toLowerCase() }
+        ]
+      }),
+      Registration.findOne({ contact_number: contactNumber.trim() })
+    ]);
 
     if (existingInfluencer) {
       const field = existingInfluencer.contact_number === contactNumber.trim() ? 'contact number' : 'email';
@@ -1182,6 +1208,13 @@ app.post('/api/influencers/register', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: `An application with this ${field} already exists. Please contact support if you need assistance.`
+      });
+    }
+
+    if (existingFarmer) {
+      return res.status(400).json({
+        success: false,
+        message: 'This phone number is already registered as a farmer. Please use a different number.'
       });
     }
 
@@ -2671,6 +2704,27 @@ app.post('/api/registration/save', async (req, res) => {
       });
     }
 
+    // Check for duplicate phone number in farmers and influencers
+    const phoneNumber = data.contactNumber;
+    const [existingFarmer, existingInfluencer] = await Promise.all([
+      Registration.findOne({ contact_number: phoneNumber }),
+      Influencer.findOne({ contact_number: phoneNumber })
+    ]);
+
+    if (existingFarmer) {
+      return res.status(400).json({
+        success: false,
+        message: 'This phone number is already registered as a farmer. Please use a different number.'
+      });
+    }
+
+    if (existingInfluencer) {
+      return res.status(400).json({
+        success: false,
+        message: 'This phone number is already registered as an influencer. Please use a different number.'
+      });
+    }
+
     let otpSession = null;
     const now = new Date();
 
@@ -2758,15 +2812,30 @@ app.post('/api/registration/save', async (req, res) => {
     registration.contact_number = phoneNumber;
     registration.email_id = data.emailId ? String(data.emailId).trim().toLowerCase() : null;
     registration.aadhaar_farmer_id = data.aadhaarFarmerId ? String(data.aadhaarFarmerId).trim() : null;
+    // NEW: Demographics
+    registration.gender = String(data.gender || 'Male').trim();
+    registration.category = String(data.category || 'General').trim();
+    registration.farmer_age = parseInt(data.farmerAge, 10) || 18;
+    // NEW: Bank Details
+    registration.bank_name = String(data.bankName || '').trim();
+    registration.bank_account_number = String(data.bankAccountNumber || '').trim();
+    registration.bank_ifsc = String(data.bankIfsc || '').trim().toUpperCase();
+    // Location
     registration.village_panchayat = String(data.villagePanchayat || '').trim();
     registration.mandal_block = String(data.mandalBlock || '').trim();
+    registration.sub_district = data.subDistrict ? String(data.subDistrict).trim() : null;
     registration.district = String(data.district || '').trim();
     registration.state = String(data.state || '').trim();
+    registration.pincode = data.pincode ? String(data.pincode).trim() : null;
+    registration.house_number = data.houseNumber ? String(data.houseNumber).trim() : null;
+    registration.landmark = data.landmark ? String(data.landmark).trim() : null;
+    // Land
     registration.khasra_passbook = data.khasraPassbook ? String(data.khasraPassbook).trim() : null;
     registration.plot_no = data.plotNo ? String(data.plotNo).trim() : null;
     registration.total_land = toNumeric(data.totalLand, 0);
     registration.land_unit = normalizeLandUnit(data.landUnit);
     registration.area_natural_farming = toNumeric(data.areaNaturalFarming, 0);
+    registration.land_ownership = String(data.landOwnership || 'Own').trim();
     registration.present_crop = data.presentCrop ? String(data.presentCrop).trim() : null;
     registration.sowing_date = data.sowingDate ? new Date(data.sowingDate) : new Date();
     registration.harvesting_date = data.harvestingDate ? new Date(data.harvestingDate) : null;
@@ -2780,18 +2849,33 @@ app.post('/api/registration/save', async (req, res) => {
         variety: c.variety ? String(c.variety).trim() : ''
       }));
     }
+    // NEW: Yield information
+    registration.expected_yield = data.expectedYield ? toNumeric(data.expectedYield, null) : null;
+    registration.self_consumption = data.selfConsumption ? toNumeric(data.selfConsumption, null) : null;
+    registration.cropping_seasons = toList(data.preferredCroppingSeason);
     
     registration.farming_practice = normalizeFarmingPractice(data.farmingPractice);
     registration.farming_experience = parseInt(data.farmingExperience, 10) || 0;
     registration.irrigation_source = normalizeIrrigation(data.irrigationSource);
+    registration.irrigation_methods = String(data.irrigationMethods || 'Irrigation').trim();
+    // NEW: Livestock with quantity
     registration.livestock = toList(data.livestock);
+    registration.livestock_quantity = data.livestockQuantity ? parseInt(data.livestockQuantity, 10) : 0;
+    // NEW: Equipment and Facilities
+    registration.machineries = toList(data.machineries);
+    registration.godam_count = data.godamCount ? parseInt(data.godamCount, 10) : 0;
+    registration.godam_capacity = data.godamCapacity ? toNumeric(data.godamCapacity, 0) : 0;
+    registration.compost_facility = data.compostFacility || 'No';
+    registration.process_facility = data.processFacility || 'No';
+    registration.other_facility = data.otherFacility || 'No';
+    registration.last_chemical_date = data.lastChemicalDate ? new Date(data.lastChemicalDate) : null;
     registration.willing_to_adopt = data.willingToAdopt || 'Maybe';
     registration.additional_details = {
       trainingRequired: data.trainingRequired || null,
       localGroupName: data.localGroupName || null,
-      preferredCroppingSeason: data.preferredCroppingSeason || null,
       remarks: data.remarks || null,
-      naturalInputs: data.naturalInputs || null
+      naturalInputs: data.naturalInputs || null,
+      farmersPledgeConsent: data.farmersPledgeConsent || false
     };
     registration.terms_agreement = Boolean(data.termsAgreement);
     registration.coupon_code = couponInput ? couponInput.toUpperCase() : null;
